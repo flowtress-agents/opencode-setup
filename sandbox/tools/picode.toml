@@ -1,0 +1,21 @@
+[meta]
+name = "picode"
+npm_name = "@earendil-works/pi"
+repo = "https://github.com/earendil-works/pi"
+
+[install]
+cmd = "npm install -g @earendil-works/pi"
+bin_name = "pi"
+entry = "pi"
+
+[runtime]
+node_min = "20.0.0"
+node_recommended = "22.19.0"
+npm_min = "10.0.0"
+pnpm_min = "9.0.0"
+
+[capabilities]
+supports_telemetry_off = true
+supports_offline_mode = true
+supports_version_skip = true
+default_model_provider = "anthropic"

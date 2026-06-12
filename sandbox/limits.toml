@@ -1,0 +1,22 @@
+[timeouts]
+container_start = 60
+idle = 600
+hook_exec = 60
+git_setup = 10
+commit_collection = 30
+merge_to_host = 30
+completion_grace = 60
+
+[resources]
+cpus_default = null
+memory_default = null
+swap_default = null
+pids_default = 1024
+
+[rate_limits]
+agent_start = null
+hook_exec_per_min = 60
+commit_per_min = 30
+
+[disk]
+quota_workspace_mb = 1024

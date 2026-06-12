@@ -1,0 +1,20 @@
+[meta]
+name = "herdr"
+repo = "https://github.com/ogulcancelik/herdr"
+version_min = "0.1.0"
+
+[paths]
+sessions = "~/.local/share/herdr"
+cache = "~/.cache/herdr"
+
+[pty]
+required = true
+term = "xterm-256color"
+
+[session]
+format = "jsonl"
+compress = "gzip"
+
+[runtime]
+node_min = "22.19.0"
+bun_min = "1.1.0"

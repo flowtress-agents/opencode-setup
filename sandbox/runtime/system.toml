@@ -1,0 +1,30 @@
+[os]
+family = "debian"
+release = "bookworm"
+
+[locale]
+locale = "C.UTF-8"
+timezone = "Etc/UTC"
+lang = "C.UTF-8"
+
+[apt_packages]
+required = [
+  "bash",
+  "ca-certificates",
+  "git",
+  "curl",
+  "jq",
+  "ripgrep",
+  "libncursesw6",
+  "libncursesw6-dev",
+  "tzdata",
+]
+
+[git]
+safe_directory = true
+default_branch = "main"
+user_name = "agent"
+user_email = "agent@localhost"
+
+[path]
+extra = ["/usr/local/bin", "/home/agent/.local/bin"]
