@@ -66,4 +66,15 @@ describe("launch-sandbox spec — enforcement", () => {
   it("health.post_build_checks_required is true", () => {
     expect(spec.health.post_build_checks_required).toBe(true);
   });
+  it("install.steps has 3 entries in declared order with apt-base first, and health.post_build_checks lists herdr and pi --version", () => {
+    // Order matters: apt-base must come before herdr/picode so packages are installed before npm/binary steps.
+    expect(spec.install.steps).toHaveLength(3);
+    expect(spec.install.steps.map((s) => s.name)).toEqual(["apt-base", "herdr", "picode"]);
+    // Post-build health checks must verify both binaries the install steps are required to produce.
+    expect(spec.health.post_build_checks).toEqual([
+      "docker image inspect ${IMAGE_NAME}",
+      "docker run --rm ${IMAGE_NAME} herdr --version",
+      "docker run --rm ${IMAGE_NAME} pi --version",
+    ]);
+  });
 });
