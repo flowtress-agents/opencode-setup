@@ -4,7 +4,7 @@ repo = "https://github.com/ogulcancelik/herdr"
 version_min = "0.1.0"
 
 [paths]
-sessions = "~/.local/share/herdr"
+sessions = "~/.config/herdr/sessions"
 cache = "~/.cache/herdr"
 
 [pty]

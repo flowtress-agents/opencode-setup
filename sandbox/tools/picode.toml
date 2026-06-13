@@ -9,7 +9,7 @@ bin_name = "pi"
 entry = "pi"
 
 [runtime]
-node_min = "20.0.0"
+node_min = "22.19.0"
 node_recommended = "22.19.0"
 npm_min = "10.0.0"
 pnpm_min = "9.0.0"

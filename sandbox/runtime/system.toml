@@ -8,17 +8,7 @@ timezone = "Etc/UTC"
 lang = "C.UTF-8"
 
 [apt_packages]
-required = [
-  "bash",
-  "ca-certificates",
-  "git",
-  "curl",
-  "jq",
-  "ripgrep",
-  "libncursesw6",
-  "libncursesw6-dev",
-  "tzdata",
-]
+required = ["git", "curl", "jq"]
 
 [git]
 safe_directory = true
