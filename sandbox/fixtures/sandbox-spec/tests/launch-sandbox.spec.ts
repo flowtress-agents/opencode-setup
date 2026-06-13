@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SPEC_PATH = resolve(__dirname, "../../../../../micro-spec/sandbox/scripts/launch-sandbox.toml");
+const SPEC_PATH = resolve(__dirname, "../../../../scripts/launch-sandbox.toml");
 
 async function loadSpec(): Promise<any> {
   const text = await readFile(SPEC_PATH, "utf8");

@@ -17,11 +17,15 @@ uid_collision_strategy = "shift_to_first_free"   # shift_to_first_free | fail | 
 [build]
 # stdin heredoc hung under Colima; tempfile is mandatory.
 context_strategy = "tempfile"                    # tempfile | stdin
+# If stdin is used the loader MUST write a tempfile first regardless.
+# A loader that pipes the Dockerfile to `docker build -` violates this spec.
 # Legacy builder can hang in Colima or be slow on first pull. Cap wall-clock.
 build_timeout_sec = 180
 # Colima network may not reach docker.io on first try. Declare fallbacks.
 registry_fallbacks = ["docker.io", "ghcr.io"]
 pull_timeout_sec = 60
+# Fallbacks are attempted in order when the primary pull fails or times out.
+registry_fallbacks_required = true
 
 [install]
 # Original spec had no install steps; herdr/picode must be declared here as data.
@@ -34,7 +38,9 @@ name = "herdr"
 cmd  = "curl -fsSL https://herdr.dev/install.sh | sh"
 # Fallback if installer fails: binary from GitHub releases.
 fallback_cmd = "curl -fsSL https://github.com/ogulcancelik/herdr/releases/latest/download/herdr-linux-aarch64 -o /usr/local/bin/herdr && chmod +x /usr/local/bin/herdr"
+fallback_cmd_required = true   # must run fallback if primary cmd fails
 bin_name = "herdr"
+must_succeed = true           # herdr binary must be present and executable when build exits
 
 [[install.steps]]
 name = "picode"
@@ -42,15 +48,23 @@ name = "picode"
 npm   = "@earendil-works/pi-coding-agent"
 cmd   = "npm install -g @earendil-works/pi-coding-agent"
 bin_name = "pi"
+must_succeed = true           # pi binary must be present and executable when build exits
 
 [entrypoint]
 # ENTRYPOINT ["/bin/bash"] with no CMD treats positional arg as a filename.
 # ENTRYPOINT ["/bin/bash","-c"] requires an arg or fails.
 # Spec declares the supported form explicitly.
+# For "cmd" form, the launcher generates:
+#   ENTRYPOINT ["/bin/bash", "-c"]
+#   CMD ["sleep infinity"]  (or whatever the container start command is)
+# For "exec" form:
+#   ENTRYPOINT ["/bin/bash", "-c", "<cmd string>"]
 form = "cmd"                                     # cmd | exec
 cmd  = ["/bin/bash"]
 # Container must accept `sleep infinity` as the positional command.
 supports_sleep_infinity = true
+# The launcher MUST generate ENTRYPOINT ["/bin/bash", "-c"] when form = "cmd".
+# A bare ENTRYPOINT ["/bin/bash"] with no "-c" violates this spec.
 
 [user]
 name = "agent"
@@ -58,12 +72,19 @@ uid  = 1000
 gid  = 1000
 home = "/home/agent"
 workdir = "/home/agent/workspace"
+# After user creation, the launcher MUST verify the actual uid matches the strategy.
+# E.g. if strategy is shift_to_first_free and 1000 is taken, the effective uid
+# must be 1001 and `docker exec img id -u agent` must return that value.
+uid_verification_required = true
 
 [health]
 # Original script had no post-build verification. Spec requires it.
+# Each check is a shell command string. The launcher MUST run all checks
+# in declaration order and MUST fail the build if any check returns non-zero.
 post_build_checks = [
   "docker image inspect ${IMAGE_NAME}",
   "docker run --rm ${IMAGE_NAME} herdr --version",
   "docker run --rm ${IMAGE_NAME} pi --version"
 ]
+post_build_checks_required = true   # all checks must pass; first failure aborts the build
 post_start_timeout_sec = 30
