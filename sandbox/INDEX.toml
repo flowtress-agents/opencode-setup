@@ -7,3 +7,4 @@ description = "Docker sandbox container with herdr + piCode pre-installed and ba
 tools = ["tools/herdr.toml", "tools/picode.toml"]
 runtime = ["runtime/docker.toml", "runtime/system.toml"]
 limits = "limits.toml"
+scripts = ["scripts/launch-sandbox.toml"]
