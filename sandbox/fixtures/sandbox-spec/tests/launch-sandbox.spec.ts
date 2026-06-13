@@ -1,55 +1,69 @@
-import { describe, it, expect } from "vitest";
-import { readFile } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { parse as parseToml } from "smol-toml";
+import { describe, it, expect, beforeAll } from "vitest";
+import { loadLaunchSandboxSpec, type LaunchSandboxSpec } from "../src/spec-loader.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SPEC_PATH = resolve(__dirname, "../../../../scripts/launch-sandbox.toml");
+let spec: LaunchSandboxSpec;
 
-async function loadSpec(): Promise<any> {
-  const text = await readFile(SPEC_PATH, "utf8");
-  return parseToml(text);
-}
+beforeAll(async () => {
+  try {
+    spec = await loadLaunchSandboxSpec();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Failed to load launch-sandbox.toml from /spec/sandbox/scripts/. ` +
+      `Spec must exist for these tests to pass. Original error: ${msg}`
+    );
+  }
+});
 
-describe("launch-sandbox spec", () => {
-  it("image.base is node:22-bookworm", async () => {
-    const s = await loadSpec();
-    expect(s.image.base).toBe("node:22-bookworm");
+describe("launch-sandbox spec — shape", () => {
+  it("meta.name is 'launch-sandbox' and version is 0.2.0", () => {
+    expect(spec.meta.name).toBe("launch-sandbox");
+    expect(spec.meta.version).toBe("0.2.0");
   });
-  it("image.agent_uid is 1000", async () => {
-    const s = await loadSpec();
-    expect(s.image.agent_uid).toBe(1000);
+  it("image.base is node:22-bookworm", () => {
+    expect(spec.image.base).toBe("node:22-bookworm");
   });
-  it("build.context_strategy is tempfile (NOT stdin)", async () => {
-    const s = await loadSpec();
-    expect(s.build.context_strategy).toBe("tempfile");
+  it("image.agent_uid is 1000", () => {
+    expect(spec.image.agent_uid).toBe(1000);
   });
-  it("build.build_timeout_sec is set", async () => {
-    const s = await loadSpec();
-    expect(s.build.build_timeout_sec).toBeGreaterThan(0);
+  it("image.uid_collision_strategy is shift_to_first_free", () => {
+    expect(spec.image.uid_collision_strategy).toBe("shift_to_first_free");
   });
-  it("install.steps includes a picode step with @earendil-works/pi-coding-agent", async () => {
-    const s = await loadSpec();
-    const picode = (s.install.steps as any[]).find((x) => x.name === "picode");
+  it("build.context_strategy is tempfile (NOT stdin)", () => {
+    expect(spec.build.context_strategy).toBe("tempfile");
+  });
+  it("entrypoint.form is 'cmd' with /bin/bash and supports_sleep_infinity", () => {
+    expect(spec.entrypoint.form).toBe("cmd");
+    expect(spec.entrypoint.cmd).toEqual(["/bin/bash"]);
+    expect(spec.entrypoint.supports_sleep_infinity).toBe(true);
+  });
+  it("install.steps includes a picode step with the correct npm package", () => {
+    const picode = spec.install.steps.find((x) => x.name === "picode");
     expect(picode).toBeDefined();
-    expect(picode.npm).toBe("@earendil-works/pi-coding-agent");
-    expect(picode.npm).not.toBe("@earendil-works/pi");
+    expect(picode?.npm).toBe("@earendil-works/pi-coding-agent");
+    expect(picode?.npm).not.toBe("@earendil-works/pi");
   });
-  it("install.steps includes a herdr step with fallback_cmd", async () => {
-    const s = await loadSpec();
-    const herdr = (s.install.steps as any[]).find((x) => x.name === "herdr");
+});
+
+describe("launch-sandbox spec — enforcement", () => {
+  it("build.registry_fallbacks_required is true", () => {
+    expect(spec.build.registry_fallbacks_required).toBe(true);
+  });
+  it("herdr step has fallback_cmd_required and must_succeed", () => {
+    const herdr = spec.install.steps.find((x) => x.name === "herdr");
     expect(herdr).toBeDefined();
-    expect(herdr.fallback_cmd).toContain("github.com/ogulcancelik/herdr");
+    expect(herdr?.fallback_cmd_required).toBe(true);
+    expect(herdr?.must_succeed).toBe(true);
   });
-  it("entrypoint.form is 'cmd' with /bin/bash and supports_sleep_infinity", async () => {
-    const s = await loadSpec();
-    expect(s.entrypoint.form).toBe("cmd");
-    expect(s.entrypoint.cmd).toEqual(["/bin/bash"]);
-    expect(s.entrypoint.supports_sleep_infinity).toBe(true);
+  it("picode step has must_succeed", () => {
+    const picode = spec.install.steps.find((x) => x.name === "picode");
+    expect(picode).toBeDefined();
+    expect(picode?.must_succeed).toBe(true);
   });
-  it("image.uid_collision_strategy is set (NOT 'fail' which would re-introduce the original bug)", async () => {
-    const s = await loadSpec();
-    expect(s.image.uid_collision_strategy).toBe("shift_to_first_free");
+  it("user.uid_verification_required is true", () => {
+    expect(spec.user.uid_verification_required).toBe(true);
+  });
+  it("health.post_build_checks_required is true", () => {
+    expect(spec.health.post_build_checks_required).toBe(true);
   });
 });
