@@ -20,5 +20,5 @@ export interface LaunchSandboxSpec {
 
 export async function loadLaunchSandboxSpec(): Promise<LaunchSandboxSpec> {
   const text = await readFile(SPEC_PATH, "utf8");
-  return parseToml(text) as LaunchSandboxSpec;
+  return parseToml(text) as unknown as LaunchSandboxSpec;
 }
