@@ -25,6 +25,7 @@ export interface HerdrSpec {
 export interface PicodeSpec {
   name: string;
   npmName: string;
+  friendlyName: string;
   repo: string;
   install: { cmd: string; binName: string; entry: string };
   runtime: { nodeMin: string; nodeRecommended: string; npmMin: string; pnpmMin: string };
@@ -91,8 +92,9 @@ export async function loadHerdrSpec(): Promise<HerdrSpec> {
 export async function loadPicodeSpec(): Promise<PicodeSpec> {
   const raw = await loadToml<any>("tools/picode.toml");
   return {
-    name: raw.meta.name,
+    name: raw.meta.npm_name,
     npmName: raw.meta.npm_name,
+    friendlyName: raw.meta.name,
     repo: raw.meta.repo,
     install: { cmd: raw.install.cmd, binName: raw.install.bin_name, entry: raw.install.entry },
     runtime: {
@@ -151,13 +153,13 @@ export async function loadLimitsSpec(): Promise<LimitsSpec> {
       completionGrace: raw.timeouts.completion_grace,
     },
     resources: {
-      cpusDefault: raw.resources.cpus_default,
-      memoryDefault: raw.resources.memory_default,
-      swapDefault: raw.resources.swap_default,
+      cpusDefault: raw.resources?.cpus_default ?? null,
+      memoryDefault: raw.resources?.memory_default ?? null,
+      swapDefault: raw.resources?.swap_default ?? null,
       pidsDefault: raw.resources.pids_default,
     },
     rateLimits: {
-      agentStart: raw.rate_limits.agent_start,
+      agentStart: raw.rate_limits?.agent_start ?? null,
       hookExecPerMin: raw.rate_limits.hook_exec_per_min,
       commitPerMin: raw.rate_limits.commit_per_min,
     },
