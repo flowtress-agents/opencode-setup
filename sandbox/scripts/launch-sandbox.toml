@@ -1,0 +1,69 @@
+# Launch script spec (data-driven) — replaces the hardcoded launch-sandbox.zsh
+[meta]
+name = "launch-sandbox"
+version = "0.2.0"
+description = "Data-driven contract for the sandbox launcher. Consumed by a zsh loader (green phase)."
+
+[image]
+base = "node:22-bookworm"
+agent_uid = 1000
+agent_gid = 1000
+agent_user = "agent"
+# node:22-bookworm already has a 'node' user at uid 1000. The launcher must
+# detect this collision and either pick the first free uid (1001) or override
+# via the chosen strategy.
+uid_collision_strategy = "shift_to_first_free"   # shift_to_first_free | fail | override
+
+[build]
+# stdin heredoc hung under Colima; tempfile is mandatory.
+context_strategy = "tempfile"                    # tempfile | stdin
+# Legacy builder can hang in Colima or be slow on first pull. Cap wall-clock.
+build_timeout_sec = 180
+# Colima network may not reach docker.io on first try. Declare fallbacks.
+registry_fallbacks = ["docker.io", "ghcr.io"]
+pull_timeout_sec = 60
+
+[install]
+# Original spec had no install steps; herdr/picode must be declared here as data.
+[[install.steps]]
+name = "apt-base"
+cmd  = "apt-get update && apt-get install -y git curl jq && rm -rf /var/lib/apt/lists/*"
+
+[[install.steps]]
+name = "herdr"
+cmd  = "curl -fsSL https://herdr.dev/install.sh | sh"
+# Fallback if installer fails: binary from GitHub releases.
+fallback_cmd = "curl -fsSL https://github.com/ogulcancelik/herdr/releases/latest/download/herdr-linux-aarch64 -o /usr/local/bin/herdr && chmod +x /usr/local/bin/herdr"
+bin_name = "herdr"
+
+[[install.steps]]
+name = "picode"
+# Original used the non-existent @earendil-works/pi. Correct npm package:
+npm   = "@earendil-works/pi-coding-agent"
+cmd   = "npm install -g @earendil-works/pi-coding-agent"
+bin_name = "pi"
+
+[entrypoint]
+# ENTRYPOINT ["/bin/bash"] with no CMD treats positional arg as a filename.
+# ENTRYPOINT ["/bin/bash","-c"] requires an arg or fails.
+# Spec declares the supported form explicitly.
+form = "cmd"                                     # cmd | exec
+cmd  = ["/bin/bash"]
+# Container must accept `sleep infinity` as the positional command.
+supports_sleep_infinity = true
+
+[user]
+name = "agent"
+uid  = 1000
+gid  = 1000
+home = "/home/agent"
+workdir = "/home/agent/workspace"
+
+[health]
+# Original script had no post-build verification. Spec requires it.
+post_build_checks = [
+  "docker image inspect ${IMAGE_NAME}",
+  "docker run --rm ${IMAGE_NAME} herdr --version",
+  "docker run --rm ${IMAGE_NAME} pi --version"
+]
+post_start_timeout_sec = 30
