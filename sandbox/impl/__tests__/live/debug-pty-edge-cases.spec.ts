@@ -459,31 +459,53 @@ describeOrSkip("EDCE-4: node-pty unavailable — fallback to docker-exec", () =>
     // Wait a bit
     await new Promise((r) => setTimeout(r, 1000));
 
-    // The container sleep should STILL be running (signal did NOT propagate)
-    const sleepStillRunning = execSync(
-      `docker exec ${ctx.containerId} pgrep -x sleep`,
-      { encoding: "utf-8", stdio: "ignore" },
-    );
+    // The container sleep should STILL be running (signal did NOT propagate).
+    // However, pgrep returns no match if the sleep already exited, in which case
+    // execSync throws (exit 1). Tolerate that, plus a null/empty stdout.
+    let sleepStillRunning: string | null = null;
+    try {
+      sleepStillRunning = execSync(
+        `docker exec ${ctx.containerId} pgrep -x sleep`,
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      );
+    } catch {
+      // pgrep exit 1 — no matching process in container.
+      sleepStillRunning = null;
+    }
 
-    console.warn(
-      `YELLOW[EDCE-4 finding]: After sending SIGINT to docker exec process, ` +
-        `pgrep sleep in container returned: "${sleepStillRunning.trim() || '(empty)'}". ` +
-        "If a PID is shown, the signal did NOT propagate to the container process — " +
-        "this confirms the known limitation of docker-exec -i -t fallback: signals " +
-        "sent to the local docker exec process do not reach the container process. " +
-        "A real PTY (node-pty) would propagate signals correctly.",
-    );
+    const observed = (sleepStillRunning ?? "").trim();
+    if (observed) {
+      console.warn(
+        `YELLOW[EDCE-4 finding]: After sending SIGINT to docker exec process, ` +
+          `pgrep sleep in container returned: "${observed}". ` +
+          "A PID is shown → the signal did NOT propagate to the container process. " +
+          "This confirms the known limitation of docker-exec -i -t fallback: " +
+          "signals sent to the local docker exec process do not reach the " +
+          "container process. A real PTY (node-pty) would propagate signals.",
+      );
+    } else {
+      console.warn(
+        `YELLOW[EDCE-4 finding]: After sending SIGINT to docker exec process, ` +
+          "pgrep sleep in container returned no PID (empty). " +
+          "The signal DID propagate to the container process — contrary to the " +
+          "documented docker-exec -i -t fallback limitation. This inverse finding " +
+          "weakens the originally-documented behavior; signal propagation may " +
+          "depend on docker daemon version or host kernel.",
+      );
+    }
 
     // Clean up
     try { proc.kill("SIGKILL"); } catch { /* best-effort */ }
 
     // The container sleep may or may not still be running depending on how
-    // docker exec handles signal forwarding. We just document the behavior.
+    // docker exec handles signal forwarding. We document whichever occurs.
     expect(true).toBe(true);
 
     // Clean up container sleep
-    execSync(`docker exec ${ctx.containerId} killall sleep 2>/dev/null || true`, {
-      stdio: "ignore",
-    });
+    try {
+      execSync(`docker exec ${ctx.containerId} killall sleep 2>/dev/null || true`, {
+        stdio: "ignore",
+      });
+    } catch { /* best-effort */ }
   });
 });
