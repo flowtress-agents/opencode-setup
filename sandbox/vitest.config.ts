@@ -11,6 +11,7 @@ export default defineConfig({
       "fixtures/sandbox-spec/tests/**/*.spec.ts",
       "tdad-tests/**/*.spec.ts",
       "impl/__tests__/**/*.spec.ts",
+      "impl/runtime/__tests__/**/*.spec.ts",
     ],
     globals: false,
     testTimeout: 10000,

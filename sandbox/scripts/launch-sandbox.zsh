@@ -10,7 +10,7 @@ SCRIPT_DIR=${0:A:h}
 IMAGE_NAME="herdr-picode-sandbox"
 CONTAINER_NAME="herdr-picode-sandbox-$$"
 WORKSPACE_HOST="${PWD}/workspace"
-WORKSPACE_CONTAINER="/home/agent/workspace"
+WORKSPACE_CONTAINER="/home/node/workspace"
 
 # -------------------------------------------------------------------
 # Spec values (must stay in sync with micro-spec/sandbox/*.toml)
@@ -50,17 +50,19 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     DOCKERFILE_CONTENT=$(cat <<'DOCKERFILE_END'
 FROM node:22-bookworm
 RUN apt-get update && apt-get install -y git curl jq && rm -rf /var/lib/apt/lists/*
-RUN useradd -m -u 1000 -s /bin/bash agent
-RUN npm install -g @earendil-works/pi
-USER agent
-WORKDIR /home/agent/workspace
-ENTRYPOINT ["/bin/bash"]
+WORKDIR /home/node/workspace
+CMD ["/bin/bash"]
 DOCKERFILE_END
 )
-    echo "$DOCKERFILE_CONTENT" | docker build -t "$IMAGE_NAME" - || {
+    local DOCKERFILE_PATH
+    DOCKERFILE_PATH=$(mktemp)
+    print -r "$DOCKERFILE_CONTENT" > "$DOCKERFILE_PATH"
+    docker build -t "$IMAGE_NAME" -f "$DOCKERFILE_PATH" "$(dirname "$DOCKERFILE_PATH")" || {
+      rm -f "$DOCKERFILE_PATH"
       echo "ERROR: docker build failed. Check that Dockerfile syntax is valid." >&2
       exit 1
     }
+    rm -f "$DOCKERFILE_PATH"
     echo "Image built successfully."
   else
     echo "Image $IMAGE_NAME already exists, skipping build."
@@ -75,7 +77,6 @@ docker run -d \
   --hostname "sandbox-agent" \
   -v "${WORKSPACE_HOST}:${WORKSPACE_CONTAINER}" \
   -w "$WORKSPACE_CONTAINER" \
-  --user "${CONTAINER_UID}:${CONTAINER_GID}" \
   "$IMAGE_NAME" \
   sleep infinity
 
