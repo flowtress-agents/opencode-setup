@@ -53,6 +53,20 @@ import {
   MAX_SUB_AGENTS_PER_ORCHESTRATOR,
   MAX_PANE_DEPTH,
 } from "../../../fixtures/sandbox-spec/src/multiplexing.js";
+import {
+  canSignal,
+  READ_ONLY_SIGNALS,
+  type AgentIdentity,
+  type Capability,
+} from "../../../fixtures/sandbox-spec/src/governance.js";
+import {
+  getAdversarialTracker,
+  resetAdversarialTracker,
+  registerAdversarialChild,
+  assertAdversarialChild,
+  signalOnlyAdversarialCanSignal,
+  canUserWorkspaceChallenge,
+} from "../../orchestration/adversarial-protocol.js";
 
 const ENABLE_LIVE_TESTS = process.env.RUN_LIVE_TESTS === "1";
 
@@ -672,5 +686,219 @@ describeOrSkip("ATK-5: Pane ID Collision Attack", () => {
         `the reserved pane-0 ID.`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ATK-CAP: Capability Model Enforcement
+// ---------------------------------------------------------------------------
+// These tests verify the capability model (read vs readwrite) combined with
+// the signalOnly flag is correctly enforced by canSignal(). A read-only
+// agent can only emit signals in READ_ONLY_SIGNALS, and a signalOnly agent
+// (adversarial) can only emit "challenge".
+//
+// Tests are pure spec-level (no Docker needed), so they run in the regular
+// suite. They are placed here in the herdr adversarial spec because they
+// describe the runtime behavior of herdr-mediated agent signaling.
+// ---------------------------------------------------------------------------
+
+function makeIdentity(id: string, parentAgentId: string | null, capability: Capability): AgentIdentity {
+  return { id, parentAgentId, capability };
+}
+
+describe("ATK-CAP: capability model enforcement on canSignal", () => {
+
+  // Reset the adversarial tracker between tests so adversarial child state
+  // does not leak across describe blocks.
+  beforeEach(() => {
+    resetAdversarialTracker();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test tree used for capability scenarios
+  // -------------------------------------------------------------------------
+  //   orchestrator (readwrite, root)
+  //         |
+  //   sub-orch-read  -----  user-workspace-tab (always-allowed challenge source)
+  //
+  // The "read-only attacker" is a sub-agent spawned under sub-orch-read.
+  // -------------------------------------------------------------------------
+
+  const orchestrator = makeIdentity("orchestrator", null, "readwrite");
+  const subOrchRead = makeIdentity("sub-orch-read", "orchestrator", "read");
+  const readOnlyAttacker = makeIdentity("read-only-attacker", "sub-orch-read", "read");
+  const signalOnlyAttacker = makeIdentity("signal-only-attacker", "sub-orch-read", "read");
+  const userWorkspaceTab = makeIdentity("user-workspace", "orchestrator", "readwrite");
+
+  // -------------------------------------------------------------------------
+  // ATK-CAP-1: read-only agent attempts herdr agent start (write intent)
+  // -------------------------------------------------------------------------
+  it("ATK-CAP-1: read-only agent attempting 'agent start' (write intent) is rejected by canSignal", () => {
+    // The CLI signal "agent-start" is NOT in READ_ONLY_SIGNALS, so a read
+    // agent must be denied. This is the gate that would prevent a read-only
+    // agent from running `herdr agent start` against the orchestrator.
+    const result = canSignal(readOnlyAttacker, subOrchRead, "agent-start");
+    expect(result).toBe(false);
+
+    // Spot check: every non-read-only signal should be denied.
+    for (const sig of ["agent-start", "git-commit", "edit", "npm-install", "write", "git-push"]) {
+      expect(canSignal(readOnlyAttacker, subOrchRead, sig)).toBe(false);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // ATK-CAP-2: read-only agent attempts pane run with destructive command
+  // -------------------------------------------------------------------------
+  it("ATK-CAP-2: read-only agent attempting 'pane run' with destructive intent is rejected by canSignal", () => {
+    // "pane-run" is a write-shaped signal (it executes a command in a pane).
+    // A read-only agent must be denied. The destructive payload
+    // "rm -rf /" is a red herring — the rejection happens at the signal
+    // level before the payload is even parsed.
+    const result = canSignal(readOnlyAttacker, subOrchRead, "pane-run");
+    expect(result).toBe(false);
+
+    // Even when the attacker is sibling-of-target and would normally pass
+    // the flat-governance check, the capability check fires first.
+    const siblingRead = makeIdentity("sibling-read", "sub-orch-read", "read");
+    expect(canSignal(siblingRead, readOnlyAttacker, "pane-run")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // ATK-CAP-3: read-only agent signals "challenge" — must be allowed
+  // -------------------------------------------------------------------------
+  it("ATK-CAP-3: read-only agent sending 'challenge' (in READ_ONLY_SIGNALS) is allowed", () => {
+    expect(READ_ONLY_SIGNALS.has("challenge")).toBe(true);
+    // siblings sharing the same parent (sub-orch-read): both children of
+    // sub-orch-read, so flat-governance allows sibling signals.
+    const result = canSignal(readOnlyAttacker, signalOnlyAttacker, "challenge");
+    expect(result).toBe(true);
+
+    // Adversarial pattern: a read-only parent signaling its child with
+    // "challenge" is also allowed (parent -> child spawn relationship,
+    // and "challenge" is in READ_ONLY_SIGNALS).
+    const childForChallenge = makeIdentity("challenge-target", "sub-orch-read", "read");
+    expect(canSignal(readOnlyAttacker, childForChallenge, "challenge")).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // ATK-CAP-4: signalOnly=true agent attempting "spawn" is rejected
+  // -------------------------------------------------------------------------
+  it("ATK-CAP-4: signalOnly=true agent attempting 'spawn' is rejected (adversarial constraint)", () => {
+    // canSignal() in the spec does not yet know about the signalOnly flag —
+    // it only knows capability. signalOnly enforcement is layered on top of
+    // the spec via the signalOnlyAdversarialCanSignal() runtime check. The
+    // test asserts that the runtime helper rejects any non-challenge signal
+    // for an agent flagged signalOnly=true.
+    //
+    // Topology: signalOnlyAttacker is a child of sub-orch-read. The attacker
+    // signals its parent (sub-orch-read) — the spec's parent->child rule
+    // means sub-orch-read is the parent of signalOnlyAttacker, and the
+    // ATTACKER is signaling the PARENT, which is the "child->parent" direction
+    // and is NOT in the spec allow-list. So we use a sibling topology for the
+    // positive assertions where the spec would allow.
+    const siblingRead = makeIdentity("sibling-read", "sub-orch-read", "read");
+    const signalOnlySibling = {
+      ...siblingRead,
+      id: "signal-only-sibling",
+      signalOnly: true,
+    } as AgentIdentity & { signalOnly: boolean };
+
+    // "spawn" is in READ_ONLY_SIGNALS, but signalOnly rejection fires first
+    // before the spec check. The rejection must NOT depend on spec acceptance.
+    const result = signalOnlyAdversarialCanSignal(
+      signalOnlySibling,
+      siblingRead,
+      "spawn",
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reason.toLowerCase()).toMatch(/signalOnly|challenge/);
+
+    // "challenge" is the only signal that should be allowed for a signalOnly agent
+    // and only when the spec also allows it (sibling -> sibling passes).
+    const challengeResult = signalOnlyAdversarialCanSignal(
+      signalOnlySibling,
+      siblingRead,
+      "challenge",
+    );
+    expect(challengeResult.allowed).toBe(true);
+
+    // Non-signalOnly agents are unaffected by this check
+    const nonSignalOnly = makeIdentity("normal-read", "sub-orch-read", "read");
+    const normalResult = signalOnlyAdversarialCanSignal(nonSignalOnly, siblingRead, "ack");
+    expect(normalResult.allowed).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Sanity: user-workspace tab can always challenge (human-in-the-loop)
+  // -------------------------------------------------------------------------
+  it("user-workspace tab can always send 'challenge' to any sibling (human-in-the-loop override)", () => {
+    // user-workspace is a child of orchestrator. It can challenge the
+    // sub-orch-read (sibling under orchestrator) and the read-only attacker
+    // (sibling's child, NOT a sibling of user-workspace, so this would
+    // normally be denied). The human-in-the-loop override path allows the
+    // user-workspace tab to inject challenges anyway.
+    expect(canUserWorkspaceChallenge(userWorkspaceTab, subOrchRead)).toBe(true);
+    expect(canUserWorkspaceChallenge(userWorkspaceTab, readOnlyAttacker)).toBe(true);
+    // Non-user-workspace agents do not have this override
+    expect(canUserWorkspaceChallenge(readOnlyAttacker, subOrchRead)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ATK-CHL: Adversarial Child Enforcement
+// ---------------------------------------------------------------------------
+// These tests verify the InMemoryAdversarialTracker enforces the rule:
+//   "Every sub-orchestrator must register exactly one adversarial child."
+//
+// A sub-orchestrator with 0 adversarial children or 2+ adversarial children
+// is rejected. The rejection surfaces as a thrown error from
+// assertAdversarialChild().
+// ---------------------------------------------------------------------------
+
+describe("ATK-CHL: InMemoryAdversarialTracker enforces exactly-one adversarial child", () => {
+
+  beforeEach(() => {
+    resetAdversarialTracker();
+  });
+
+  // -------------------------------------------------------------------------
+  // ATK-CHL-1: sub-orchestrator without an adversarial child is rejected
+  // -------------------------------------------------------------------------
+  it("ATK-CHL-1: sub-orchestrator without an adversarial child is rejected", () => {
+    // No registerAdversarialChild() call has been made for sub-orch-A.
+    // assertAdversarialChild() must throw.
+    expect(() => assertAdversarialChild("sub-orch-A")).toThrow(
+      /adversarial.*child.*missing|no adversarial child/i,
+    );
+
+    // hasAdversarialChild() must return false
+    const tracker = getAdversarialTracker();
+    expect(tracker.hasAdversarialChild("sub-orch-A")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // ATK-CHL-2: sub-orchestrator with 2 adversarial children is rejected
+  // -------------------------------------------------------------------------
+  it("ATK-CHL-2: sub-orchestrator with 2 adversarial children is rejected (must be exactly 1)", () => {
+    // Register two adversarial children for sub-orch-B.
+    registerAdversarialChild("sub-orch-B");
+    registerAdversarialChild("sub-orch-B");
+
+    // assertAdversarialChild() must throw because there are 2.
+    expect(() => assertAdversarialChild("sub-orch-B")).toThrow(
+      /adversarial.*child.*count|exactly one|multiple/i,
+    );
+
+    // Sanity: a different sub-orch is unaffected
+    expect(() => assertAdversarialChild("sub-orch-C")).toThrow();
+  });
+
+  // -------------------------------------------------------------------------
+  // Sanity: exactly 1 adversarial child is allowed
+  // -------------------------------------------------------------------------
+  it("sub-orchestrator with exactly 1 adversarial child is accepted", () => {
+    registerAdversarialChild("sub-orch-D");
+    expect(() => assertAdversarialChild("sub-orch-D")).not.toThrow();
+    expect(getAdversarialTracker().hasAdversarialChild("sub-orch-D")).toBe(true);
   });
 });

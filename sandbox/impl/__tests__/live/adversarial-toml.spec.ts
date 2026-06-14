@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { parse as parseToml } from "smol-toml";
 import { generateDockerfile } from "../../docker/docker-adapter.js";
+import type { Challenge, ChallengeKind } from "../../orchestration/adversarial-protocol.js";
 
 const RUN_LIVE = process.env.RUN_LIVE_TESTS === "1";
 
@@ -49,11 +50,13 @@ registry_fallbacks = ["docker.io", "ghcr.io"]
 [[install.steps]]
 name = "apt-base"
 cmd = "apt-get update && apt-get install -y git curl jq"
+evidence = "github.com/example/install.md#apt-base"
 
 [[pane]]
 agent = "pi"
 role = "orchestrator"
 immutable = true
+capability = "read"
 
 [governance]
 model = "flat"
@@ -148,6 +151,89 @@ function validateSpecForLaunch(spec: any): void {
       );
     }
   }
+}
+
+/**
+ * Adversarial challenge validator: scan a spec for the four "challenge"
+ * violation kinds defined in adversarial-protocol.ts (wrong_branch,
+ * missing_evidence, depth_violation, capability_violation) and emit
+ * a Challenge for each one found.
+ *
+ * The spec module is the spec — the adversarial agent reads the spec
+ * to produce challenges. This mirrors the runtime where the adversarial
+ * child inspects the spec and surfaces protocol violations.
+ *
+ * The targetPaneId is the pane the violation was discovered under. The
+ * caller supplies it (it is not derivable from the spec alone).
+ */
+function validateSpecAndEmitChallenges(
+  spec: any,
+  targetPaneId: string,
+): Challenge[] {
+  const challenges: Challenge[] = [];
+
+  // TOML-CHL-1: wrong_branch — the spec declares a working branch other
+  // than the orchestrator's required branch (default: "main").
+  const declaredBranch = spec.worktree?.branch ?? spec.governance?.branch;
+  const requiredBranch = "main";
+  if (typeof declaredBranch === "string" && declaredBranch !== requiredBranch) {
+    challenges.push({
+      kind: "wrong_branch",
+      targetPaneId,
+      reason: `spec declares branch="${declaredBranch}" but orchestrator requires "${requiredBranch}"`,
+      evidence: `worktree.branch or governance.branch must be "${requiredBranch}"`,
+      severity: "block",
+    });
+  }
+
+  // TOML-CHL-2: missing_evidence — at least one [[install.steps]] must
+  // carry an evidence string (provenance) so the adversarial agent can
+  // verify the install action was deliberate.
+  if (Array.isArray(spec.install?.steps)) {
+    const stepsWithEvidence = spec.install.steps.filter(
+      (s: any) => typeof s?.evidence === "string" && s.evidence.length > 0,
+    );
+    if (spec.install.steps.length > 0 && stepsWithEvidence.length === 0) {
+      challenges.push({
+        kind: "missing_evidence",
+        targetPaneId,
+        reason: `${spec.install.steps.length} install step(s) declared but none carry an "evidence" field`,
+        evidence: "every [[install.steps]] entry must include an evidence string (provenance)",
+        severity: "block",
+      });
+    }
+  }
+
+  // TOML-CHL-3: depth_violation — max_pane_depth must not exceed the
+  // ADR 0005 hard cap of 3.
+  const MAX_PANE_DEPTH_HARD_CAP = 3;
+  const depth = spec.limits?.max_pane_depth;
+  if (typeof depth === "number" && depth > MAX_PANE_DEPTH_HARD_CAP) {
+    challenges.push({
+      kind: "depth_violation",
+      targetPaneId,
+      reason: `limits.max_pane_depth=${depth} exceeds ADR 0005 hard cap of ${MAX_PANE_DEPTH_HARD_CAP}`,
+      evidence: `pane depth ${depth} would allow sub-orchestrator -> sub-orchestrator chains that the protocol forbids`,
+      severity: "block",
+    });
+  }
+
+  // TOML-CHL-4: capability_violation — the orchestrator pane must NOT be
+  // declared as readwrite. Per ADR 0002, the orchestrator is read-only.
+  const orchestratorPane = Array.isArray(spec.pane)
+    ? spec.pane.find((p: any) => p.role === "orchestrator")
+    : null;
+  if (orchestratorPane && orchestratorPane.capability === "readwrite") {
+    challenges.push({
+      kind: "capability_violation",
+      targetPaneId,
+      reason: `orchestrator pane declares capability="readwrite" but ADR 0002 requires capability="read"`,
+      evidence: `pane.role="orchestrator" with capability="readwrite" would allow the orchestrator to mutate the repo`,
+      severity: "block",
+    });
+  }
+
+  return challenges;
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +743,261 @@ max_pane_depth = 0
       // image.base error should be first
       expect(thrown!.message).toMatch(/image\.base/i);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TOML-CHL: Adversarial challenge emission from spec violations
+// ---------------------------------------------------------------------------
+// The adversarial agent reads the parsed spec and emits a Challenge for
+// each protocol violation. These tests feed spec-shaped TOML (intentionally
+// violating one ADR each) and assert that exactly the right ChallengeKind
+// is emitted. The challenge is spec-level so these run in the regular
+// suite (no Docker required).
+//
+// Mapping (see adversarial-protocol.ts ChallengeKind):
+//   wrong_branch         -> TOML-CHL-1: spec.branch != "main"
+//   missing_evidence     -> TOML-CHL-2: install.steps lack "evidence"
+//   depth_violation      -> TOML-CHL-3: max_pane_depth > 3
+//   capability_violation -> TOML-CHL-4: orchestrator pane capability=readwrite
+// ---------------------------------------------------------------------------
+
+describe("TOML-CHL: adversarial challenge emission from spec violations", () => {
+
+  // -------------------------------------------------------------------------
+  // TOML-CHL-1: wrong_branch challenge
+  // -------------------------------------------------------------------------
+  it("TOML-CHL-1: spec violation with worktree.branch='feature/foo' triggers a 'wrong_branch' challenge", () => {
+    const toml = `
+[image]
+base = "node:22-bookworm"
+
+[build]
+context_strategy = "tempfile"
+registry_fallbacks = ["docker.io"]
+
+[worktree]
+branch = "feature/foo"
+
+[[install.steps]]
+name = "apt-base"
+cmd = "apt-get update"
+evidence = "github.com/example/install.md"
+
+[[pane]]
+agent = "pi"
+role = "orchestrator"
+immutable = true
+
+[governance]
+model = "flat"
+
+[limits]
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 3
+
+[launch]
+mode = "single-container"
+`;
+    const spec = parseTomlString(toml);
+    const challenges = validateSpecAndEmitChallenges(spec, "pane-orch");
+
+    const wrongBranch = challenges.find((c) => c.kind === "wrong_branch");
+    expect(wrongBranch).toBeDefined();
+    expect(wrongBranch!.severity).toBe("block");
+    expect(wrongBranch!.targetPaneId).toBe("pane-orch");
+    expect(wrongBranch!.reason).toMatch(/branch/i);
+    expect(wrongBranch!.evidence).toMatch(/main/);
+
+    // No other challenge kinds should be emitted for this spec
+    const otherKinds = challenges.filter((c) => c.kind !== "wrong_branch");
+    expect(otherKinds).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // TOML-CHL-2: missing_evidence challenge
+  // -------------------------------------------------------------------------
+  it("TOML-CHL-2: install.steps lacking 'evidence' fields triggers a 'missing_evidence' challenge", () => {
+    const toml = `
+[image]
+base = "node:22-bookworm"
+
+[build]
+context_strategy = "tempfile"
+registry_fallbacks = ["docker.io"]
+
+[[install.steps]]
+name = "apt-base"
+cmd = "apt-get update"
+
+[[install.steps]]
+name = "curl-install"
+cmd = "curl -fsSL https://example.com/install.sh | sh"
+
+[[pane]]
+agent = "pi"
+role = "orchestrator"
+immutable = true
+
+[governance]
+model = "flat"
+
+[limits]
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 3
+
+[launch]
+mode = "single-container"
+`;
+    const spec = parseTomlString(toml);
+    const challenges = validateSpecAndEmitChallenges(spec, "pane-install");
+
+    const missingEvidence = challenges.find((c) => c.kind === "missing_evidence");
+    expect(missingEvidence).toBeDefined();
+    expect(missingEvidence!.severity).toBe("block");
+    expect(missingEvidence!.targetPaneId).toBe("pane-install");
+    expect(missingEvidence!.reason).toMatch(/evidence/i);
+    expect(missingEvidence!.evidence).toMatch(/provenance|install\.steps/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // TOML-CHL-3: depth_violation challenge
+  // -------------------------------------------------------------------------
+  it("TOML-CHL-3: limits.max_pane_depth=5 (above hard cap) triggers a 'depth_violation' challenge", () => {
+    const toml = `
+[image]
+base = "node:22-bookworm"
+
+[build]
+context_strategy = "tempfile"
+registry_fallbacks = ["docker.io"]
+
+[[install.steps]]
+name = "apt-base"
+cmd = "apt-get update"
+evidence = "github.com/example/install.md"
+
+[[pane]]
+agent = "pi"
+role = "orchestrator"
+immutable = true
+
+[governance]
+model = "flat"
+
+[limits]
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 5
+
+[launch]
+mode = "single-container"
+`;
+    const spec = parseTomlString(toml);
+    const challenges = validateSpecAndEmitChallenges(spec, "pane-orch");
+
+    const depthViolation = challenges.find((c) => c.kind === "depth_violation");
+    expect(depthViolation).toBeDefined();
+    expect(depthViolation!.severity).toBe("block");
+    expect(depthViolation!.targetPaneId).toBe("pane-orch");
+    expect(depthViolation!.reason).toMatch(/depth|5|hard cap|ADR 0005/i);
+    expect(depthViolation!.evidence).toMatch(/depth|forbid/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // TOML-CHL-4: capability_violation challenge
+  // -------------------------------------------------------------------------
+  it("TOML-CHL-4: orchestrator pane with capability='readwrite' triggers a 'capability_violation' challenge", () => {
+    const toml = `
+[image]
+base = "node:22-bookworm"
+
+[build]
+context_strategy = "tempfile"
+registry_fallbacks = ["docker.io"]
+
+[[install.steps]]
+name = "apt-base"
+cmd = "apt-get update"
+evidence = "github.com/example/install.md"
+
+[[pane]]
+agent = "pi"
+role = "orchestrator"
+immutable = true
+capability = "readwrite"
+
+[governance]
+model = "flat"
+
+[limits]
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 3
+
+[launch]
+mode = "single-container"
+`;
+    const spec = parseTomlString(toml);
+    const challenges = validateSpecAndEmitChallenges(spec, "pane-orch");
+
+    const capViolation = challenges.find((c) => c.kind === "capability_violation");
+    expect(capViolation).toBeDefined();
+    expect(capViolation!.severity).toBe("block");
+    expect(capViolation!.targetPaneId).toBe("pane-orch");
+    expect(capViolation!.reason).toMatch(/orchestrator.*readwrite|read-only|ADR 0002/i);
+    expect(capViolation!.evidence).toMatch(/mutate|orchestrator/i);
+  });
+
+  // -------------------------------------------------------------------------
+  // Sanity: a clean spec emits NO challenges
+  // -------------------------------------------------------------------------
+  it("a clean spec emits no challenges", () => {
+    const challenges = validateSpecAndEmitChallenges(parseTomlString(VALID_TOML), "pane-orch");
+    expect(challenges).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Sanity: a spec with multiple violations emits multiple challenges
+  // -------------------------------------------------------------------------
+  it("a spec with multiple violations emits one challenge per kind", () => {
+    const toml = `
+[image]
+base = "node:22-bookworm"
+
+[build]
+context_strategy = "tempfile"
+registry_fallbacks = ["docker.io"]
+
+[worktree]
+branch = "feature/multi-violation"
+
+[[install.steps]]
+name = "apt-base"
+cmd = "apt-get update"
+
+[[pane]]
+agent = "pi"
+role = "orchestrator"
+immutable = true
+capability = "readwrite"
+
+[governance]
+model = "flat"
+
+[limits]
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 5
+
+[launch]
+mode = "single-container"
+`;
+    const spec = parseTomlString(toml);
+    const challenges = validateSpecAndEmitChallenges(spec, "pane-orch");
+    const kinds = challenges.map((c: Challenge) => c.kind as ChallengeKind);
+    expect(kinds).toContain("wrong_branch");
+    expect(kinds).toContain("missing_evidence");
+    expect(kinds).toContain("depth_violation");
+    expect(kinds).toContain("capability_violation");
+    expect(challenges).toHaveLength(4);
   });
 });
 
