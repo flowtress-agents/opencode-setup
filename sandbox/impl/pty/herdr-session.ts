@@ -368,6 +368,91 @@ export class HerdrSession {
   }
 
   /**
+   * Spawn a new pane in a freshly-created tab. This is the per-workstream
+   * pattern the team-spawner uses — each sub-orchestrator, adversarial,
+   * and surgical fixer needs its own tab so panes don't collide.
+   *
+   * Returns a unique tabId and a paneId within that tab. The tab is
+   * created via `herdr tab create --workspace <ws> --label <label> --no-focus`
+   * and the pane is created via `herdr agent start --tab <tabId>`.
+   *
+   * @param cmd - Command + argv to run in the new pane
+   * @param opts.tabLabel - Human-readable tab label (e.g. "orch-scaffold_2")
+   * @param opts.workspaceId - Workspace to create the tab in. If omitted,
+   *   the orchestrator's workspace (pane 0's workspace) is used.
+   * @returns SpawnPaneResult with the new paneId and the new tabId
+   */
+  async spawnPaneInNewTab(
+    cmd: string[],
+    opts: { tabLabel?: string; workspaceId?: string } = {},
+  ): Promise<SpawnPaneResult> {
+    _spawnPaneCounter += 1;
+    const tabLabel = opts.tabLabel ?? `tab-${Date.now()}-${_spawnPaneCounter}`;
+    const workspaceId = opts.workspaceId ?? "default";
+
+    // Step 1: create a new tab in the workspace.
+    const tabArgs = [
+      "tab",
+      "create",
+      "--workspace",
+      workspaceId,
+      "--cwd",
+      "/home/agent/workspace",
+      "--label",
+      tabLabel,
+      "--no-focus",
+    ];
+    const tabResult = herdrCmd(tabArgs, this.containerId);
+    if (tabResult.exitCode !== 0) {
+      throw new Error(
+        `herdr tab create failed for label="${tabLabel}":\n${tabResult.stderr}`,
+      );
+    }
+    const tabId = parseTabId(tabResult.stdout) ?? "tab-unknown";
+    const rootPaneId = parseRootPaneId(tabResult.stdout) ?? "pane-unknown";
+
+    // Step 2: start the agent in that tab. We use --tab so the agent
+    // lands in the freshly-created tab as its root pane.
+    const agentName = `agent-${Date.now()}-${_spawnPaneCounter}`;
+    const agentArgs = [
+      "agent",
+      "start",
+      agentName,
+      "--workspace",
+      workspaceId,
+      "--tab",
+      tabId,
+      "--cwd",
+      "/home/agent/workspace",
+      "--no-focus",
+      "--",
+      ...cmd,
+    ];
+    const agentResult = herdrCmd(agentArgs, this.containerId);
+    if (agentResult.exitCode !== 0) {
+      // herdr may not support --tab on this version; fall back to
+      // the regular spawnPane and use the tabId we just created.
+      // The pane will share the first tab's pane_id; this is a
+      // best-effort fallback so callers still get a valid handle.
+      console.warn(
+        `YELLOW[liberty-herdr-tab-flag]: herdr agent start --tab failed: ${agentResult.stderr}. ` +
+          `Falling back to spawnPane; tabId may not match the agent's tab.`,
+      );
+      const fallback = await this.spawnPane(cmd);
+      return { paneId: fallback.paneId, tabId };
+    }
+
+    // Parse the agent start response to get the paneId. The agent
+    // response uses a unique pane_id that may differ from rootPaneId
+    // (it's the new pane the agent is running in, not the tab root).
+    const agentPaneId = parseAgentPaneId(agentResult.stdout);
+    return {
+      paneId: agentPaneId ?? rootPaneId,
+      tabId,
+    };
+  }
+
+  /**
    * Wait for a pane to be ready (state = idle or working).
    */
   async waitForPane(paneId: string, timeoutMs = 15000): Promise<void> {
@@ -501,6 +586,16 @@ export class HerdrSession {
   isUsingPty(): boolean {
     return this.usePty;
   }
+
+  /**
+   * Return the container id this session is bound to. Useful for
+   * callers that need to invoke `docker exec` directly (e.g. the
+   * team-spawner reads `herdr pane list` to discover the
+   * orchestrator's workspace id).
+   */
+  getContainerId(): string {
+    return this.containerId;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +616,83 @@ function parsePaneReadOutput(raw: string): string {
     .join("\n")
     .trim();
 }
+
+/**
+ * Extract the tab_id from a `herdr tab create` JSON response.
+ * Returns null if parsing fails so callers can use a fallback id.
+ */
+function parseTabId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const payload = JSON.parse(trimmed);
+    const tab = payload?.result?.tab;
+    if (typeof tab?.tab_id === "string") return tab.tab_id;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Extract the root pane_id from a `herdr tab create` JSON response.
+ * The root pane is the pane auto-created when the tab was created.
+ */
+function parseRootPaneId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const payload = JSON.parse(trimmed);
+    const root = payload?.result?.root_pane;
+    if (typeof root?.pane_id === "string") return root.pane_id;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Extract the pane_id from a `herdr agent start` JSON response.
+ */
+function parseAgentPaneId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const payload = JSON.parse(trimmed);
+    const agent = payload?.result?.agent;
+    if (typeof agent?.pane_id === "string") return agent.pane_id;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Extract the workspace_id from a `herdr pane list` or `tab list` response.
+ * Used by team-spawner to discover the orchestrator's workspace id.
+ */
+function parseWorkspaceId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const payload = JSON.parse(trimmed);
+    const panes = payload?.result?.panes;
+    if (Array.isArray(panes) && panes.length > 0) {
+      const ws = panes[0]?.workspace_id;
+      if (typeof ws === "string") return ws;
+    }
+    const tabs = payload?.result?.tabs;
+    if (Array.isArray(tabs) && tabs.length > 0) {
+      const ws = tabs[0]?.workspace_id;
+      if (typeof ws === "string") return ws;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export { parseTabId, parseRootPaneId, parseAgentPaneId, parseWorkspaceId };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
