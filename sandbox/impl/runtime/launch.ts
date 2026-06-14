@@ -11,12 +11,22 @@
  * creation still goes through Sandbox / createSandbox(); the plan is
  * the data the green-phase orchestrator consumes to decide which panes
  * to allocate.
- *
- * @param {object} spec - Parsed launch-sandbox.toml object.
- * @returns {Promise<{ containers: number, image: string, mode: string }>}
- *   A plan describing exactly 1 container.
  */
-export async function launchFromSpec(spec) {
+
+interface LaunchSandboxSpec {
+  launch?: { mode: string };
+  image?: { base?: string; base_image?: string };
+  docker?: { base?: { image?: string } };
+}
+
+interface LaunchPlan {
+  containers: number;
+  containerCount: number;
+  image: string;
+  mode: string;
+}
+
+export async function launchFromSpec(spec: LaunchSandboxSpec): Promise<LaunchPlan> {
   const mode = spec?.launch?.mode ?? "single-container";
   if (mode !== "single-container") {
     throw new Error(
