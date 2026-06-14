@@ -12,14 +12,14 @@
  * and verify all 6 orchestration features end-to-end.
  */
 
-import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll, beforeEach } from "vitest";
 import { execSync } from "node:child_process";
 import {
   launchFromSpec,
   cleanupContainer,
   verifyContainer,
 } from "../../docker/container-launcher.js";
-import { HerdrSession, herdrAvailableInContainer, piAvailableInContainer } from "../../pty/herdr-session.js";
+import { HerdrSession, resetSpawnPaneCounter, herdrAvailableInContainer, piAvailableInContainer } from "../../pty/herdr-session.js";
 import { openOrchestratorSession, waitForPiReady, closeOrchestratorSession } from "../../orchestration/orchestrator-session.js";
 import { spawnSubAgentViaHerdr, spawnMultipleSubAgents, assertUniquePaneIds, resetSubAgentCounter } from "../../orchestration/multiplexing-session.js";
 import { governanceCanSignal, verifyGovernanceLive } from "../../orchestration/governance-channel.js";
@@ -168,9 +168,21 @@ describeOrSkip("F2: pane-0 orchestrator", () => {
 // F3: multiplexing
 // ---------------------------------------------------------------------------
 
-describeOrSkip("F3: multiplexing — spawnSubAgent", () => {
-  beforeEach(() => {
+describeOrSkip("F3: multiplexing — spawnSubAgent", { hookTimeout: 30_000 }, () => {
+  beforeEach(async () => {
     resetSubAgentCounter();
+    resetSpawnPaneCounter();
+
+    const available = await dockerAvailable();
+    if (!available || !ctx.containerId) return;
+
+    if (ctx.herdrSession) {
+      await ctx.herdrSession.close();
+      ctx.herdrSession = null;
+    }
+
+    ctx.herdrSession = await HerdrSession.open({ containerId: ctx.containerId });
+    ctx.orchestratorPane0 = await ctx.herdrSession.getPane0Id();
   });
 
   beforeAll(async () => {
@@ -180,11 +192,6 @@ describeOrSkip("F3: multiplexing — spawnSubAgent", () => {
     if (!ctx.containerId) {
       const result = await launchFromSpec();
       ctx.containerId = result.containerId;
-    }
-
-    if (!ctx.herdrSession) {
-      ctx.herdrSession = await HerdrSession.open({ containerId: ctx.containerId });
-      ctx.orchestratorPane0 = await ctx.herdrSession.getPane0Id();
     }
   });
 

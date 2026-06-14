@@ -146,6 +146,10 @@ export interface SpawnPaneResult {
  */
 let _spawnPaneCounter = 0;
 
+export function resetSpawnPaneCounter(): void {
+  _spawnPaneCounter = 0;
+}
+
 export class HerdrSession {
   private containerId: string;
   private ptyProcess: import("node-pty").IPty | null = null;
@@ -208,10 +212,13 @@ export class HerdrSession {
     }
 
     if (!session.ptyProcess) {
-      // Fallback: start herdr as a detached daemon inside the container.
-      const startResult = dockerExecCmd([DOCKER_BIN, "exec", "-d", containerId, "herdr"]);
-      if (startResult.exitCode !== 0) {
-        throw new Error(`failed to start herdr daemon:\n${startResult.stderr}`);
+      // Fallback: start herdr as a detached daemon when none is running.
+      const listCheck = herdrCmd(["pane", "list"], containerId);
+      if (listCheck.exitCode !== 0) {
+        const startResult = dockerExecCmd([DOCKER_BIN, "exec", "-d", containerId, "herdr"]);
+        if (startResult.exitCode !== 0) {
+          throw new Error(`failed to start herdr daemon:\n${startResult.stderr}`);
+        }
       }
     }
 
@@ -420,6 +427,9 @@ export class HerdrSession {
       } catch { /* best-effort */ }
       this.fallbackProcess = null;
     }
+    // Stop the detached herdr daemon so the next session starts with a clean workspace.
+    herdrCmd(["server", "stop"], this.containerId);
+    await waitForHerdrStopped(this.containerId);
   }
 
   /**
@@ -451,6 +461,20 @@ function parsePaneReadOutput(raw: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll until herdr daemon is no longer reachable (post server stop). */
+async function waitForHerdrStopped(containerId: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = herdrCmd(["pane", "list"], containerId);
+    if (result.exitCode !== 0) {
+      return;
+    }
+    await sleep(200);
+  }
+  // Last-resort stop if daemon is still responding.
+  herdrCmd(["server", "stop"], containerId);
 }
 
 /**
