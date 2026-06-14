@@ -32,9 +32,7 @@ interface GovernanceModule {
 }
 
 async function loadGovernance(): Promise<GovernanceModule> {
-  // Resolved at runtime by the vitest module loader. Today this throws
-  // ERR_MODULE_NOT_FOUND; in green phase it returns the real exports.
-  // @ts-expect-error -- module does not exist in red phase
+  // Resolved at runtime by the vitest module loader.
   return (await import("../src/governance.js")) as unknown as GovernanceModule;
 }
 
