@@ -42,3 +42,41 @@ already claims uid 1000 for the `node` user, so `shift_to_first_free` is
 the default.
 
 **Avoid**: uid policy, user strategy
+
+## Orchestration
+
+The sandbox supports multi-agent orchestration via a pane delegation
+model. These terms are defined by ADRs 0002–0005 and are load-bearing
+for F1–F6 in the red phase of the test worktree.
+
+**Orchestrator**: The pi instance running in pane 0 of the herdr TTY.
+It is the agent the user interacts with directly. There is exactly one
+top-level orchestrator per container.
+
+**Avoid**: primary agent, root agent, main agent
+
+**Sub-orchestrator**: A pi instance spawned by another orchestrator.
+It can spawn its own sub-agents but is itself a child of one parent
+orchestrator. Sub-orchestrators exist in their own pane.
+
+**Sub-agent**: A non-pi agent spawned by an orchestrator or
+sub-orchestrator. Leaf in the spawn tree; cannot spawn further agents
+unless explicitly promoted.
+
+**Pane control rule**: Each agent (orchestrator, sub-orchestrator,
+sub-agent) owns exactly one pane in one herdr tab/workspace. An
+agent cannot read or write the panes of any agent other than its
+own descendants. (ADR 0004)
+
+**Flat governance chain**: Despite the spawn tree being hierarchical,
+governance is flat: every agent is peer-to-peer with its parent and
+its siblings. No agent has authority over another except via
+explicit spawn/signal contracts. (F5)
+
+**User workspace**: A separate herdr workspace/tab reserved for the
+user's direct bash interaction. The orchestrator cannot interact
+with the user workspace. The user cannot inject into an
+orchestrator-controlled pane. (F6)
+
+**Avoid**: terminal, terminal multiplexer (use "herdr" for the
+multiplexer, "pane" for a single subdivision)
