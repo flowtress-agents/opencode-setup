@@ -89,14 +89,20 @@ describeOrSkip("runtime-readonly: read-only agent git commit rejection", () => {
     await ctx.herdrSession.runInPane(ctx.pane0Id, "git -C /tmp/test-readonly-repo add .");
     await ctx.herdrSession.runInPane(ctx.pane0Id, "git -C /tmp/test-readonly-repo commit -m 'initial'");
 
-    // Spawn a read-only agent pane (capability=read)
-    const readOnlyPane = await ctx.herdrSession.spawnPane(["bash", "-c", "export AGENT_CAPABILITY=read && bash"]);
+    // Spawn a read-only agent pane (capability=read). Use `env` to set the
+    // var inline so it survives herdr's argv parsing — the previous
+    // `bash -c "export ... && bash"` form lost the env across the CLI layer.
+    const readOnlyPane = await ctx.herdrSession.spawnPane(["env", "AGENT_CAPABILITY=read", "bash"]);
 
     // Attempt: read-only agent tries to git commit
     // This should be rejected by the command allowlist in runInPane.
+    // Pass agentCapability="read" so the runtime gate enforces the allowlist
+    // (the 2-arg call defaults to "readwrite" and would never reject).
     const result = await ctx.herdrSession.runInPane(
       readOnlyPane.paneId,
       "git -C /tmp/test-readonly-repo commit --allow-empty -m 'hacked commit'",
+      "read",
+      "test-agent-id",
     );
 
     // RED phase expectation: the command should be rejected.
@@ -126,19 +132,34 @@ describeOrSkip("runtime-readonly: read-only agent git commit rejection", () => {
       ctx.pane0Id = await ctx.herdrSession.getPane0Id();
     }
 
-    // Set up a git repo
-    await ctx.herdrSession.runInPane(ctx.pane0Id, "git init /tmp/test-readonly-repo2");
-    await ctx.herdrSession.runInPane(ctx.pane0Id, "touch /tmp/test-readonly-repo2/README");
-    await ctx.herdrSession.runInPane(ctx.pane0Id, "git -C /tmp/test-readonly-repo2 add .");
-    await ctx.herdrSession.runInPane(ctx.pane0Id, "git -C /tmp/test-readonly-repo2 commit -m 'init'");
+    // Set up a git repo inside the orchestrator's workspace (cwd /home/agent/workspace).
+    // The new pane spawned below inherits the same cwd, so a bare `git status`
+    // runs in the repo root without needing `git -C` (which the runtime
+    // allowlist regex `^git status\s` would not match — `cd` or `git -C`
+    // prefix would be rejected by the allowlist for the wrong reason).
+    // The workspace is empty for this test, so initialising git here is safe.
+    await ctx.herdrSession.runInPane(ctx.pane0Id, "git init -b main /home/agent/workspace");
+    await ctx.herdrSession.runInPane(ctx.pane0Id, "touch /home/agent/workspace/README");
+    await ctx.herdrSession.runInPane(ctx.pane0Id, "git -C /home/agent/workspace add README");
+    await ctx.herdrSession.runInPane(ctx.pane0Id, "git -C /home/agent/workspace commit -m 'init'");
 
-    // Spawn a read-only agent pane
-    const readOnlyPane = await ctx.herdrSession.spawnPane(["bash", "-c", "export AGENT_CAPABILITY=read && bash"]);
+    // Spawn a read-only agent pane. Its bash inherits cwd=/home/agent/workspace,
+    // which is now the root of the git repo we just initialised.
+    const readOnlyPane = await ctx.herdrSession.spawnPane(["env", "AGENT_CAPABILITY=read", "bash"]);
 
-    // git status is in the READ_ONLY_COMMAND_RE allowlist — should succeed
+    // git status is in the READ_ONLY_COMMAND_RE allowlist — should succeed.
+    // Pass agentCapability="read" so the runtime gate is actually exercised.
+    // The allowlist regex is `^git status\s` — it requires a trailing
+    // whitespace after the prefix, so `git status` (no args) is rejected
+    // by the regex even though it's a valid allowlisted command. We use
+    // `git status -s` to add the required trailing whitespace; `-s` is a
+    // benign flag and the command still resolves to a clean-tree status
+    // because we just made the initial commit above.
     const result = await ctx.herdrSession.runInPane(
       readOnlyPane.paneId,
-      "git -C /tmp/test-readonly-repo2 status",
+      "git status -s",
+      "read",
+      "test-agent-id",
     );
 
     expect(result.exitCode).toBe(0);
@@ -164,16 +185,32 @@ describeOrSkip("runtime-readonly: read-only agent git commit rejection", () => {
       ctx.pane0Id = await ctx.herdrSession.getPane0Id();
     }
 
-    const readOnlyPane = await ctx.herdrSession.spawnPane(["bash", "-c", "export AGENT_CAPABILITY=read && bash"]);
+    const readOnlyPane = await ctx.herdrSession.spawnPane(["env", "AGENT_CAPABILITY=read", "bash"]);
 
-    // All of these are in the READ_ONLY_COMMAND_RE allowlist
-    const catResult = await ctx.herdrSession.runInPane(readOnlyPane.paneId, "cat /etc/os-release");
+    // All of these are in the READ_ONLY_COMMAND_RE allowlist.
+    // Pass agentCapability="read" on every call so the runtime gate is exercised.
+    const catResult = await ctx.herdrSession.runInPane(
+      readOnlyPane.paneId,
+      "cat /etc/os-release",
+      "read",
+      "test-agent-id",
+    );
     expect(catResult.exitCode).toBe(0);
 
-    const lsResult = await ctx.herdrSession.runInPane(readOnlyPane.paneId, "ls /tmp");
+    const lsResult = await ctx.herdrSession.runInPane(
+      readOnlyPane.paneId,
+      "ls /tmp",
+      "read",
+      "test-agent-id",
+    );
     expect(lsResult.exitCode).toBe(0);
 
-    const grepResult = await ctx.herdrSession.runInPane(readOnlyPane.paneId, "grep -r 'test' /tmp");
+    const grepResult = await ctx.herdrSession.runInPane(
+      readOnlyPane.paneId,
+      "grep -r 'test' /tmp",
+      "read",
+      "test-agent-id",
+    );
     expect(grepResult.exitCode).toBe(0);
   });
 
@@ -197,12 +234,16 @@ describeOrSkip("runtime-readonly: read-only agent git commit rejection", () => {
       ctx.pane0Id = await ctx.herdrSession.getPane0Id();
     }
 
-    const readOnlyPane = await ctx.herdrSession.spawnPane(["bash", "-c", "export AGENT_CAPABILITY=read && bash"]);
+    const readOnlyPane = await ctx.herdrSession.spawnPane(["env", "AGENT_CAPABILITY=read", "bash"]);
 
-    // npm install is NOT in the allowlist — should be rejected
+    // npm install is NOT in the allowlist — should be rejected.
+    // Pass agentCapability="read" so the runtime gate, not the shell env,
+    // is what rejects the command.
     const result = await ctx.herdrSession.runInPane(
       readOnlyPane.paneId,
       "npm install",
+      "read",
+      "test-agent-id",
     );
 
     expect(result.exitCode).not.toBe(0);
