@@ -59,7 +59,8 @@ export interface LaunchSandboxSpec {
   launch?: { mode: "single-container" };
   // F2: pane 0 = orchestrator.
   pane?: LaunchSandboxPane[];
-  pane_startup_count?: number;
+  // YELLOW[liberty-1]: pane_startup_count lives in [pane_config] (smol-toml workaround).
+  pane_config?: { pane_startup_count: number };
   // F3: pane delegation / multiplexing.
   pane_delegation?: {
     mode: "spawn_new_tab";
@@ -178,11 +179,16 @@ function parseLaunchSandboxSpec(raw: unknown): LaunchSandboxSpec {
       );
     }
   }
-  if (obj!.pane_startup_count !== undefined && obj!.pane_startup_count !== 1) {
-    throw new LaunchSandboxSpecError(
-      "pane_startup_count",
-      `expected 1, got ${JSON.stringify(obj!.pane_startup_count)}`,
-    );
+  if (obj!.pane_config !== undefined) {
+    if (typeof obj!.pane_config !== "object" || obj!.pane_config === null) {
+      throw new LaunchSandboxSpecError("pane_config", "must be an object");
+    }
+    if (obj!.pane_config.pane_startup_count !== 1) {
+      throw new LaunchSandboxSpecError(
+        "pane_config.pane_startup_count",
+        `expected 1, got ${JSON.stringify(obj!.pane_config.pane_startup_count)}`,
+      );
+    }
   }
   if (obj!.pane !== undefined) {
     if (!Array.isArray(obj!.pane)) {

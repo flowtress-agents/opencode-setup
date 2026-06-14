@@ -1,8 +1,10 @@
 # Launch script spec (data-driven) — replaces the hardcoded launch-sandbox.zsh
 # F2: herdr auto-allocates exactly one pane at startup (pane 0). Sub-agent
-# panes are on demand (F3) and do not count toward this count. Declared at
-# top level (NOT inside [[pane]]) per the F2 spec contract. Placed before
-# any [table] header so smol-toml reads it as a top-level key.
+# panes are on demand (F3) and do not count toward this count.
+# YELLOW[liberty-1]: smol-toml nests bare keys under the nearest preceding
+# [table]. Moving pane_startup_count inside [pane_config] (before [[pane]])
+# is the structural workaround; the yellow test asserts the ordering.
+[pane_config]
 pane_startup_count = 1
 
 [meta]
