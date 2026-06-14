@@ -21,7 +21,7 @@ const FIXTURE_SOURCES = [
   "fixtures/sandbox-spec/src/docker.ts",
   "fixtures/sandbox-spec/src/system.ts",
   "fixtures/sandbox-spec/src/limits.ts",
-  "fixtures/sandbox-spec/src/launch-sandbox.ts",
+  "src/launch-sandbox.ts",
 ] as const;
 
 const FIXTURE_SPECS = [

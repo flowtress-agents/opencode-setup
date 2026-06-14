@@ -12,6 +12,7 @@
     "types": ["node", "vitest/globals"]
   },
   "include": [
+    "src/**/*",
     "fixtures/**/*",
     "vitest.config.ts"
   ]

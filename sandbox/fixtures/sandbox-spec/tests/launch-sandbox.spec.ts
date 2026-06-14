@@ -7,7 +7,7 @@ import {
   LAUNCH_SANDBOX_ENTRYPOINT,
   LAUNCH_SANDBOX_USER,
   LAUNCH_SANDBOX_HEALTH,
-} from "../src/launch-sandbox.js";
+} from "../../../src/launch-sandbox.js";
 
 describe("launch-sandbox spec — shape", () => {
   it("meta.name is 'launch-sandbox' and version is 0.2.0", () => {
