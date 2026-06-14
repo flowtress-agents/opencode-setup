@@ -75,6 +75,9 @@ echo "[check] node-pty is installed."
 # Build the image
 echo ""
 echo "[build] Building Docker image: $IMAGE_NAME"
+# Build context must include start-orchestrator.sh and prompts/, so cd into
+# SCRIPT_DIR and pipe the Dockerfile via stdin (`-f -`).
+cd "$SCRIPT_DIR"
 docker build \
   --build-arg BASE_IMAGE=node:22-bookworm \
   --build-arg HERDR_INSTALL="curl -fsSL https://herdr.dev/install.sh | sh" \
@@ -92,6 +95,9 @@ RUN curl -fsSL https://herdr.dev/install.sh | sh || \
 RUN test -x /root/.local/bin/herdr && ln -sf /root/.local/bin/herdr /usr/local/bin/herdr; \
     herdr --version
 RUN npm install -g @earendil-works/pi-coding-agent
+COPY start-orchestrator.sh /usr/local/bin/start-orchestrator
+RUN chmod +x /usr/local/bin/start-orchestrator
+COPY prompts/ /etc/prompts/
 EOF
 
 echo "[build] Image built successfully: $IMAGE_NAME"
@@ -158,6 +164,10 @@ echo "  #   $ herdr"
 echo "  # or use the herdr CLI:"
 echo "  #   $ herdr pane list"
 echo "  #   $ herdr agent start my-agent -- pi"
+echo ""
+echo "  # Boot the full orchestrator team (sub-orchestrators + adversarial swarm"
+echo "  # + surgical-fixer registry). Phases A through E of the plan:"
+echo "  #   $ start-orchestrator"
 echo ""
 echo "  # Run the live integration test suite:"
 echo "  cd $SANDBOX_DIR"
