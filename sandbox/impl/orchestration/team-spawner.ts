@@ -314,12 +314,20 @@ export async function spawnOrchestrationTeam(
   // Phase B: one sub-orchestrator per workstream.
   const subOrchestrators: Array<{ workstream: string; paneId: string; tabId: string }> = [];
   for (const ws of workstreams) {
-    const handle = await withRetry(
+    let handle = await withRetry(
       () => spawnSubOrchestrator(session, ws, workspaceId),
       undefined,
       undefined,
       `spawn-sub-orch:${ws.name}`,
     );
+    // If the returned paneId collides with one we already spawned in this
+    // call, retry the workstream once. This happens when the herdr
+    // `agent start --tab` fallback path returns the same root pane id
+    // (default tab) for every workstream.
+    const usedPaneIds = new Set(subOrchestrators.map((s) => s.paneId));
+    if (usedPaneIds.has(handle.paneId)) {
+      handle = await spawnSubOrchestrator(session, ws, workspaceId);
+    }
     subOrchestrators.push({
       workstream: ws.name,
       paneId: handle.paneId,

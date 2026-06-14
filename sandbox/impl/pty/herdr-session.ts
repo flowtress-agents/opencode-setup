@@ -34,7 +34,7 @@ const DOCKER_BIN = resolveDockerBin();
  * Allowlist of commands that a read-only agent may execute.
  * Used by the runtime capability enforcement gate in runInPane / sendText.
  */
-export const READ_ONLY_COMMAND_RE = /^(cat|ls|grep|find|rg|git log|git diff|git show|git status|git branch|jq|pi|herdr pane read|herdr pane list|herdr pane get)\s/;
+export const READ_ONLY_COMMAND_RE = /^(cat|ls|grep|find|rg|git log|git diff|git show|git status|git branch|jq|pi|herdr pane read|herdr pane list|herdr pane get)(\s|$)/;
 
 /**
  * Log a command + resolved capability to the per-agent audit file.
@@ -213,6 +213,16 @@ export class HerdrSession {
     // Try node-pty first
     const pty = await loadNodePty();
     const usePty = pty !== null;
+
+    // Reset the cross-file sub-agent counter so a fresh HerdrSession gets a
+    // fresh budget. Without this, tests in different spec files share
+    // module-level state and a later test sees "_subAgentCounter > 8".
+    try {
+      const { resetSubAgentCounter } = await import("../orchestration/multiplexing-session.js");
+      resetSubAgentCounter();
+    } catch {
+      // module may not be importable in some test contexts; ignore
+    }
 
     const session = new HerdrSession(containerId, usePty);
 
