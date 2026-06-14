@@ -108,29 +108,7 @@ function validateSpecForLaunch(spec: any): void {
     );
   }
 
-  // 3. max_sub_agents_per_orchestrator must be > 0
-  if (
-    spec.limits?.max_sub_agents_per_orchestrator !== undefined &&
-    spec.limits.max_sub_agents_per_orchestrator <= 0
-  ) {
-    throw new Error(
-      `TOML validation error: limits.max_sub_agents_per_orchestrator must be > 0 but got ${spec.limits.max_sub_agents_per_orchestrator}. ` +
-        "Value must be a positive integer.",
-    );
-  }
-
-  // 4. max_pane_depth must be > 0
-  if (
-    spec.limits?.max_pane_depth !== undefined &&
-    spec.limits.max_pane_depth <= 0
-  ) {
-    throw new Error(
-      `TOML validation error: limits.max_pane_depth must be > 0 but got ${spec.limits.max_pane_depth}. ` +
-        "Value must be a positive integer.",
-    );
-  }
-
-  // 5. image.base is required for generateDockerfile to produce a valid Dockerfile
+  // 3. image.base is required for generateDockerfile to produce a valid Dockerfile
   if (!spec.image?.base) {
     throw new Error(
       "TOML validation error: image.base is required. " +
@@ -138,7 +116,7 @@ function validateSpecForLaunch(spec: any): void {
     );
   }
 
-  // 6. registry_fallbacks must be an array
+  // 4. registry_fallbacks must be an array
   if (
     spec.build?.registry_fallbacks !== undefined &&
     !Array.isArray(spec.build.registry_fallbacks)
@@ -147,6 +125,28 @@ function validateSpecForLaunch(spec: any): void {
       `TOML validation error: build.registry_fallbacks must be an array but got ${typeof spec.build.registry_fallbacks}. ` +
         "Expected an array of registry hostnames, e.g. [\"docker.io\", \"ghcr.io\"].",
     );
+  }
+
+  // 5. max_sub_agents_per_orchestrator must be a positive integer
+  if (spec.limits?.max_sub_agents_per_orchestrator !== undefined) {
+    const val = spec.limits.max_sub_agents_per_orchestrator;
+    if (!Number.isInteger(val) || val <= 0) {
+      throw new Error(
+        `TOML validation error: limits.max_sub_agents_per_orchestrator must be > 0 but got ${val}. ` +
+          "Value must be a positive integer.",
+      );
+    }
+  }
+
+  // 6. max_pane_depth must be a positive integer
+  if (spec.limits?.max_pane_depth !== undefined) {
+    const val = spec.limits.max_pane_depth;
+    if (!Number.isInteger(val) || val <= 0) {
+      throw new Error(
+        `TOML validation error: limits.max_pane_depth must be > 0 but got ${val}. ` +
+          "Value must be a positive integer.",
+      );
+    }
   }
 }
 
@@ -460,11 +460,11 @@ mode = "single-container"
     });
 
     it("throws when registry_fallbacks is null", () => {
-      const invalidToml = VALID_TOML.replace(
-        'registry_fallbacks = ["docker.io", "ghcr.io"]',
-        "registry_fallbacks = null",
-      );
-      const spec = parseTomlString(invalidToml);
+      // smol-toml rejects bare `null` in TOML; construct the invalid spec directly.
+      const spec = {
+        ...parseTomlString(VALID_TOML),
+        build: { ...parseTomlString(VALID_TOML).build, registry_fallbacks: null },
+      };
 
       expect(() => validateSpecForLaunch(spec)).toThrow(
         /registry_fallbacks must be an array/i,
