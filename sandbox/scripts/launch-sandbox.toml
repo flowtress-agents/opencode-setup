@@ -1,4 +1,10 @@
 # Launch script spec (data-driven) — replaces the hardcoded launch-sandbox.zsh
+# F2: herdr auto-allocates exactly one pane at startup (pane 0). Sub-agent
+# panes are on demand (F3) and do not count toward this count. Declared at
+# top level (NOT inside [[pane]]) per the F2 spec contract. Placed before
+# any [table] header so smol-toml reads it as a top-level key.
+pane_startup_count = 1
+
 [meta]
 name = "launch-sandbox"
 version = "0.2.0"
@@ -88,3 +94,59 @@ post_build_checks = [
 ]
 post_build_checks_required = true   # all checks must pass; first failure aborts the build
 post_start_timeout_sec = 30
+
+# -------------------------------------------------------------------
+# Orchestration (F1-F6). Source of truth for the orchestrator pane,
+# pane delegation, sub-orchestrators, flat governance, and the user
+# workspace. See ADRs 0002-0005 for the design rationale.
+# -------------------------------------------------------------------
+
+# F1: 1 container per launch. Sub-agents are panes (ADR 0004), not new containers.
+# (Declared as its own top-level [launch] table below.)
+
+# F2: herdr opens with the orchestrator in pane 0. The orchestrator is pi
+# (ADR 0002) and is immutable — no other agent may claim pane 0 (ADR 0004, 0005).
+[[pane]]
+agent = "pi"
+role = "orchestrator"
+immutable = true
+
+[launch]
+mode = "single-container"
+
+[pane_delegation]
+# F3: sub-agents occupy a new herdr tab/workspace.
+# F3+F4: each agent owns exactly one pane in one tab/workspace, and a
+# sub-agent must record its parent pane.
+mode = "spawn_new_tab"
+one_pane_per_agent = true
+parent_pane_required = true
+tab_per_agent_session = true
+
+[limits]
+# F3: default caps for orchestration. ADR 0005 mandates these defaults
+# for the herdr/pi forks.
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 3
+
+[sub_orchestrator]
+# F4: a leaf sub-agent cannot promote itself. Only the parent
+# orchestrator may promote. Default depth cap is 3.
+promotion_required = true
+max_depth = 3
+
+[governance]
+# F5: flat chain of governance. No implicit authority levels.
+# Peer protocol: agents coordinate by explicit spawn/signal.
+model = "flat"
+peer_protocol = "explicit_spawn_signal"
+# (no authority_level field — flat means no implicit levels)
+
+[user_workspace]
+# F6: a separate herdr workspace/tab for the user's direct bash interaction.
+# The orchestrator cannot interact with it; the user cannot inject into
+# the orchestrator's panes.
+tab_id = "user"
+agent = "bash"
+orchestrator_can_interact = false
+user_can_inject_into_orchestrator = false
