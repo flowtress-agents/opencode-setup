@@ -15,6 +15,28 @@ async function loadSpec(): Promise<any> {
   return parseToml(text);
 }
 
+describe("YELLOW[liberty-1]: pane_config table position", () => {
+  it("PASSES with console.warn if [pane_config] appears before [[pane]] (smol-toml ordering)", async () => {
+    const text = await readFile(SPEC_PATH, "utf8");
+    const lines = text.split("\n");
+    const paneConfigLine = lines.findIndex((l) => l.trim() === "[pane_config]");
+    const paneArrayLine = lines.findIndex((l) => l.trim() === "[[pane]]");
+    if (paneConfigLine === -1 || paneArrayLine === -1) {
+      console.warn(
+        "YELLOW[liberty-1]: [pane_config] or [[pane]] not found in TOML; smol-toml ordering unknown",
+      );
+      return;
+    }
+    if (paneConfigLine > paneArrayLine) {
+      console.warn(
+        `YELLOW[liberty-1]: [pane_config] appears AFTER [[pane]] (line ${paneConfigLine} vs ${paneArrayLine}); smol-toml would nest pane_startup_count under [pane] — structural regression risk`,
+      );
+    }
+    // Always pass; warning is the yellow signal
+    expect(paneConfigLine).not.toBe(-1);
+  });
+});
+
 describe("F2: herdr opens with pi (orchestrator) in pane 0", () => {
   it("spec declares a [[pane]] array of pane configurations", async () => {
     const s = await loadSpec();
@@ -40,7 +62,9 @@ describe("F2: herdr opens with pi (orchestrator) in pane 0", () => {
 
   it("spec declares herdr auto-allocates exactly 1 pane at startup (sub-agent panes are on demand, F3)", async () => {
     const s = await loadSpec();
-    expect(s.pane_startup_count).toBe(1);
+    // YELLOW[liberty-1]: smol-toml nests bare keys under the nearest [table].
+    // pane_startup_count lives in [pane_config] (before [[pane]]) as a workaround.
+    expect(s.pane_config?.pane_startup_count ?? s.pane_startup_count).toBe(1);
   });
 
   it("pane[0].agent is 'pi' and not bash, shell, host, or empty", async () => {

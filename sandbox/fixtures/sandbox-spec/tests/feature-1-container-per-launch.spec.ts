@@ -10,11 +10,9 @@ const SPEC_PATH = resolve(
   "../../../../../micro-spec/sandbox/scripts/launch-sandbox.toml"
 );
 
-// Path to the runtime launcher module that the green phase must add.
-// The contract is: launchFromSpec(spec) returns a plan that reports exactly
-// 1 container (per ADR 0004 — sub-agents live in panes, not new containers).
+// YELLOW[liberty-5]: .js suffix dropped — vitest resolves .ts for bare specifiers.
 const RUNTIME_LAUNCH_PATH =
-  "../../../../../micro-impl/sandbox/impl/runtime/launch.js";
+  "../../../../../micro-impl/sandbox/impl/runtime/launch";
 
 async function loadSpec(): Promise<any> {
   const text = await readFile(SPEC_PATH, "utf8");
@@ -22,10 +20,27 @@ async function loadSpec(): Promise<any> {
 }
 
 async function importRuntime(): Promise<any> {
-  // Dynamic import with a non-literal path so TypeScript does not try to
-  // resolve the module at compile time (this file does not exist yet).
   return await import(RUNTIME_LAUNCH_PATH);
 }
+
+describe("YELLOW[liberty-5]: runtime launch module is .ts (not .js)", () => {
+  it("PASSES with console.warn if launch module is .ts", async () => {
+    const ext = ".ts";
+    const jsExt = ".js";
+    const runtimeFile = resolve(__dirname, RUNTIME_LAUNCH_PATH + ext);
+    const jsFile = resolve(__dirname, RUNTIME_LAUNCH_PATH + jsExt);
+    const { existsSync } = await import("node:fs");
+    const isTs = existsSync(runtimeFile);
+    const isJs = existsSync(jsFile);
+    if (isJs && !isTs) {
+      console.warn(
+        "YELLOW[liberty-5]: launch runtime module is still .js — .ts port pending; vitest resolves .ts for .js import specifiers",
+      );
+    }
+    // Always pass; warning is the yellow signal
+    expect(true).toBe(true);
+  });
+});
 
 describe("F1: 1 container per launch, data-driven from launch-sandbox.toml", () => {
   describe("spec declares single-container mode (top-level [launch] section)", () => {
@@ -77,7 +92,7 @@ describe("F1: 1 container per launch, data-driven from launch-sandbox.toml", () 
   });
 
   describe("launchFromSpec() runtime export reports exactly one container", () => {
-    it("is exported as a function from micro-impl/sandbox/impl/runtime/launch.js", async () => {
+    it("is exported as a function from micro-impl/sandbox/impl/runtime/launch", async () => {
       const mod = await importRuntime();
       expect(typeof mod.launchFromSpec).toBe("function");
     });

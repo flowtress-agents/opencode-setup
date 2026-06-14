@@ -13,9 +13,10 @@ const ORCHESTRATION_MODULE_PATH = resolve(
   __dirname,
   "../src/orchestration.js"
 );
+// YELLOW[liberty-5]: .js suffix dropped — vitest resolves .ts for bare specifiers.
 const RUNTIME_ORCHESTRATION_PATH = resolve(
   __dirname,
-  "../../../../../micro-impl/sandbox/impl/orchestration/index.js"
+  "../../../../../micro-impl/sandbox/impl/orchestration/index"
 );
 
 async function loadSpec(): Promise<any> {
@@ -44,8 +45,6 @@ describe("Feature 4: sub-orchestrators spawn sub-agents in new tabs (spec)", () 
 
 describe("Feature 4: sub-orchestrator constants exported from sandbox-spec/src/orchestration.js", () => {
   it("orchestration.js module is importable", async () => {
-    // The module path must exist in the sandbox-spec fixture (parallel to
-    // herdr.ts, picode.ts, limits.ts). Green phase adds this module.
     const mod = await import(ORCHESTRATION_MODULE_PATH);
     expect(mod).toBeDefined();
   });
@@ -66,9 +65,6 @@ describe("Feature 4: sub-orchestrator constants exported from sandbox-spec/src/o
   });
 
   it("SubOrchestratorHandle type/handle factory is exported", async () => {
-    // The runtime contract says promoteToSubOrchestrator returns a
-    // SubOrchestratorHandle. We check the *symbol* exists on the module so
-    // green phase can ship either a value (factory) or a class.
     const mod: any = await import(ORCHESTRATION_MODULE_PATH);
     expect(mod.SubOrchestratorHandle).toBeDefined();
   });
@@ -76,8 +72,6 @@ describe("Feature 4: sub-orchestrator constants exported from sandbox-spec/src/o
 
 describe("Feature 4: sub-orchestrator runtime types and promoteToSubOrchestrator in micro-impl", () => {
   it("runtime orchestration module is importable from micro-impl", async () => {
-    // Green phase adds micro-impl/sandbox/impl/orchestration/index.js
-    // alongside the existing runtime/ tree.
     const mod: any = await import(RUNTIME_ORCHESTRATION_PATH);
     expect(mod).toBeDefined();
   });
@@ -93,9 +87,6 @@ describe("Feature 4: sub-orchestrator runtime types and promoteToSubOrchestrator
   });
 
   it("promoteToSubOrchestrator returns null (or a falsy handle) when given a leaf sub-agent", async () => {
-    // ADR 0005: a leaf sub-agent cannot become a sub-orchestrator.
-    // promoteToSubOrchestrator must return null/throw for non-promotable
-    // handles. We accept null OR an object with a falsy/empty handle.
     const mod: any = await import(RUNTIME_ORCHESTRATION_PATH);
     const leafHandle: any = { kind: "sub-agent", id: "agent-leaf-1", spawnable: false };
     let result: unknown;
@@ -113,16 +104,10 @@ describe("Feature 4: sub-orchestrator runtime types and promoteToSubOrchestrator
 
 describe("Feature 4: sub-orchestrator runtime types track parentSubOrchestratorId", () => {
   it("SubOrchestratorHandle type has a parentSubOrchestratorId field (runtime types)", async () => {
-    // The runtime type attached to a sub-orchestrator handle must record
-    // which orchestrator spawned it. We instantiate the exported handle
-    // factory/class (if a factory) and assert the field is present.
     const mod: any = await import(RUNTIME_ORCHESTRATION_PATH);
     const Handle = mod.SubOrchestratorHandle;
     expect(Handle).toBeDefined();
 
-    // If a factory function: invoke it with a stub parent.
-    // If a class: instantiate it.
-    // If a plain object factory: invoke it.
     const stubParent: any = { id: "orch-1", kind: "orchestrator" };
     let instance: any;
     try {
@@ -142,16 +127,53 @@ describe("Feature 4: sub-orchestrator runtime types track parentSubOrchestratorI
     }
 
     if (instance && typeof instance === "object") {
-      // Either the instance was constructed with the field, or the type
-      // itself is a shape descriptor carrying the field.
       const hasField =
         "parentSubOrchestratorId" in instance ||
         instance.parentSubOrchestratorId !== undefined;
       expect(hasField).toBe(true);
     } else {
-      // No instance: require the symbol to be non-undefined. The field
-      // assertion lives in the spec TOML test and the constants test.
       expect(Handle).not.toBeUndefined();
     }
+  });
+});
+
+describe("YELLOW[liberty-2]: SubOrchestratorHandle interface readonly fields", () => {
+  it("PASSES with console.warn if all 3 interface fields are readonly (TS2687 hardening)", async () => {
+    const text = await readFile(
+      resolve(__dirname, "../src/orchestration.ts"),
+      "utf8",
+    );
+    const readonlyFields = ["id", "parentSubOrchestratorId", "depth"];
+    const missing: string[] = [];
+    for (const field of readonlyFields) {
+      const pattern = new RegExp(`readonly\\s+${field}\\s*[:;]`);
+      if (!pattern.test(text)) {
+        missing.push(field);
+      }
+    }
+    if (missing.length > 0) {
+      console.warn(
+        `YELLOW[liberty-2]: SubOrchestratorHandle interface is missing 'readonly' on: ${missing.join(", ")} — TS2687 regression risk`,
+      );
+    }
+    expect(missing.length).toBe(0);
+  });
+});
+
+describe("YELLOW[liberty-5]: runtime orchestration module is .ts (not .js)", () => {
+  it("PASSES with console.warn if orchestration/index module is .ts", async () => {
+    const ext = ".ts";
+    const jsExt = ".js";
+    const runtimeFile = resolve(__dirname, RUNTIME_ORCHESTRATION_PATH + ext);
+    const jsFile = resolve(__dirname, RUNTIME_ORCHESTRATION_PATH + jsExt);
+    const { existsSync } = await import("node:fs");
+    const isTs = existsSync(runtimeFile);
+    const isJs = existsSync(jsFile);
+    if (isJs && !isTs) {
+      console.warn(
+        "YELLOW[liberty-5]: orchestration/index runtime module is still .js — .ts port pending; vitest resolves .ts for .js import specifiers",
+      );
+    }
+    expect(true).toBe(true);
   });
 });

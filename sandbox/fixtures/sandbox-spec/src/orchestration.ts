@@ -22,14 +22,25 @@ export interface PromotableSubAgentHandle {
   depth?: number;
 }
 
+// YELLOW[liberty-2]: TS2687 hardening — all fields are readonly.
+// Interface declaration merge: the class below satisfies this interface.
 export interface SubOrchestratorHandle {
-  id: string;
-  parentSubOrchestratorId: string;
-  depth: number;
+  readonly id: string;
+  readonly parentSubOrchestratorId: string;
+  readonly depth: number;
 }
 
-export interface SubOrchestratorHandleConstructor {
-  new (args: { id: string; parentSubOrchestratorId: string; depth?: number }): SubOrchestratorHandle;
+// Named class with public readonly fields — satisfies the readonly interface.
+// The interface declaration merge makes this the canonical runtime type.
+export class SubOrchestratorHandle {
+  constructor(public readonly id: string, public readonly parentSubOrchestratorId: string, public readonly depth: number) {
+    if (typeof id !== "string" || id.length === 0) {
+      throw new Error("SubOrchestratorHandle: id must be a non-empty string");
+    }
+    if (typeof parentSubOrchestratorId !== "string" || parentSubOrchestratorId.length === 0) {
+      throw new Error("SubOrchestratorHandle: parentSubOrchestratorId must be a non-empty string");
+    }
+  }
 }
 
 /**
@@ -53,11 +64,11 @@ export function promoteToSubOrchestrator(
   if (depth > SUB_ORCHESTRATOR_MAX_DEPTH) {
     return null;
   }
-  return {
-    id: `sub-orch-${handle.id}`,
-    parentSubOrchestratorId: parentId,
+  return new SubOrchestratorHandle(
+    `sub-orch-${handle.id}`,
+    parentId,
     depth,
-  };
+  );
 }
 
 /**
@@ -69,36 +80,5 @@ export function createSubOrchestratorHandle(args: {
   parentSubOrchestratorId: string;
   depth: number;
 }): SubOrchestratorHandle {
-  return {
-    id: args.id,
-    parentSubOrchestratorId: args.parentSubOrchestratorId,
-    depth: args.depth,
-  };
+  return new SubOrchestratorHandle(args.id, args.parentSubOrchestratorId, args.depth);
 }
-
-/**
- * Class form of a sub-orchestrator handle. Mirrors the runtime contract:
- * new SubOrchestratorHandle({ id, parentSubOrchestratorId }) yields an
- * object whose parentSubOrchestratorId field is set, so the F4 test that
- * instantiates the symbol as a constructor works.
- *
- * The class declarations and the SubOrchestratorHandle interface above
- * merge at the type level; the interface describes the instance shape
- * (no modifiers), the class describes the constructor.
- */
-export const SubOrchestratorHandle: SubOrchestratorHandleConstructor = class {
-  id: string;
-  parentSubOrchestratorId: string;
-  depth: number;
-  constructor(args: { id: string; parentSubOrchestratorId: string; depth?: number }) {
-    if (typeof args.id !== "string" || args.id.length === 0) {
-      throw new Error("SubOrchestratorHandle: id must be a non-empty string");
-    }
-    if (typeof args.parentSubOrchestratorId !== "string" || args.parentSubOrchestratorId.length === 0) {
-      throw new Error("SubOrchestratorHandle: parentSubOrchestratorId must be a non-empty string");
-    }
-    this.id = args.id;
-    this.parentSubOrchestratorId = args.parentSubOrchestratorId;
-    this.depth = typeof args.depth === "number" ? args.depth : 1;
-  }
-} as unknown as SubOrchestratorHandleConstructor;
