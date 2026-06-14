@@ -11,6 +11,8 @@
  * that is not flagged as promotable.
  */
 
+import type { Capability } from "./governance.js";
+
 export const SUB_ORCHESTRATOR_PROMOTION_REQUIRED: true = true;
 export const SUB_ORCHESTRATOR_MAX_DEPTH = 3;
 
@@ -28,12 +30,19 @@ export interface SubOrchestratorHandle {
   readonly id: string;
   readonly parentSubOrchestratorId: string;
   readonly depth: number;
+  /** Sub-orchestrators are always "read" — they cannot mutate the repo. */
+  readonly capability: Capability;
 }
 
 // Named class with public readonly fields — satisfies the readonly interface.
 // The interface declaration merge makes this the canonical runtime type.
 export class SubOrchestratorHandle {
-  constructor(public readonly id: string, public readonly parentSubOrchestratorId: string, public readonly depth: number) {
+  constructor(
+    public readonly id: string,
+    public readonly parentSubOrchestratorId: string,
+    public readonly depth: number,
+    public readonly capability: Capability = "read",
+  ) {
     if (typeof id !== "string" || id.length === 0) {
       throw new Error("SubOrchestratorHandle: id must be a non-empty string");
     }
@@ -68,6 +77,7 @@ export function promoteToSubOrchestrator(
     `sub-orch-${handle.id}`,
     parentId,
     depth,
+    "read",
   );
 }
 
@@ -79,6 +89,7 @@ export function createSubOrchestratorHandle(args: {
   id: string;
   parentSubOrchestratorId: string;
   depth: number;
+  capability?: Capability;
 }): SubOrchestratorHandle {
-  return new SubOrchestratorHandle(args.id, args.parentSubOrchestratorId, args.depth);
+  return new SubOrchestratorHandle(args.id, args.parentSubOrchestratorId, args.depth, args.capability ?? "read");
 }

@@ -10,6 +10,8 @@
  * (or smaller values); this module just exposes the agreed defaults.
  */
 
+import type { Capability } from "./governance.js";
+
 export const PANE_DELEGATION_MODE = "spawn_new_tab" as const;
 
 export const ONE_PANE_PER_AGENT: true = true;
@@ -23,6 +25,13 @@ export interface SubAgentConfig {
   name: string;
   agent?: string;
   parentTabId?: string;
+  /** Capability tier for the sub-agent. Defaults to "readwrite". */
+  capability?: Capability;
+  /**
+   * If true, this agent is an adversarial agent that may only send
+   * challenge signals. It cannot participate in producing artifacts.
+   */
+  signalOnly?: boolean;
 }
 
 export interface SubAgentHandle {

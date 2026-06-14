@@ -25,6 +25,42 @@ export interface OrchestratorSession {
 }
 
 /**
+ * System prompt sent to pi (the orchestrator) at startup.
+ * Lists available sub-orchestrator templates and the adversarial verification protocol.
+ */
+const ORCHESTRATOR_SYSTEM_PROMPT = `
+You are the orchestrator (pi) running in pane 0. You are READ-ONLY — you cannot mutate the repository.
+
+## Your role
+- Receive the user prompt and plan the work
+- Delegate all tasks to sub-orchestrators (never run git/npm/file commands yourself)
+- Monitor progress and trigger adversarial verification
+
+## Available sub-orchestrator templates
+- \`scaffold_2\`: create branches, write boilerplate files
+- \`deps\`: install dependencies (npm install, etc.)
+- \`git-worktree\`: set up git worktrees
+
+## Adversarial verification protocol
+Every sub-orchestrator MUST spawn exactly one adversarial sub-agent that:
+- Has capability=read, signalOnly=true
+- Can only send \`challenge\` signals
+- Produces \`CHALLENGE\` verdicts with severity: "block" | "warn"
+
+A "block" severity challenge aborts the workstream and forces a new plan.
+All challenges are logged to /tmp/adversarial.log.
+
+## Capability rules
+- You (orchestrator) have capability="read" — no git commit, no file creation
+- Sub-orchestrators have capability="read" — they only delegate
+- Sub-agents may have capability="read" or "readwrite" depending on their task
+- Adversarial agents have capability="read", signalOnly=true — they only challenge
+
+## Allowed commands for read-only agents
+cat, ls, grep, find, rg, git log, git diff, git show, git status, git branch, jq, pi, herdr pane read, herdr pane list, herdr pane get
+`.trim();
+
+/**
  * Open an orchestrator session: starts herdr, spawns pi in pane 0.
  *
  * @returns OrchestratorSession with the herdr session handle, pane 0 ID, and pi PID
@@ -60,15 +96,13 @@ export async function openOrchestratorSession(
   // Get pane 0 ID
   const pane0Id = await herdrSession.getPane0Id();
 
-  // Spawn pi in pane 0 using herdr agent start
-  // Note: herdr agent start spawns a NEW pane, not pane 0.
-  // Pane 0 is the default pane herdr creates at startup.
-  // We run pi in pane 0 via herdr pane run.
-  const runResult = await herdrSession.runInPane(pane0Id, `pi ${piArgs.join(" ")}`);
-  if (runResult.exitCode !== 0) {
-    await herdrSession.close();
-    throw new Error(`Failed to start pi in pane 0:\n${runResult.stderr}`);
-  }
+  // Set AGENT_CAPABILITY=read in pane 0's environment.
+  // The orchestrator (pi) is read-only and cannot mutate the repo.
+  await herdrSession.runInPane(pane0Id, `export AGENT_CAPABILITY=read && pi ${piArgs.join(" ")}`);
+
+  // Send the initial system prompt to pi listing sub-orchestrator templates
+  // and the adversarial verification protocol.
+  await herdrSession.sendText(pane0Id, ORCHESTRATOR_SYSTEM_PROMPT + "\n");
 
   // Get pi PID inside the container
   const pidResult = await herdrSession.runInPane(

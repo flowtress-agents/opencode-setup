@@ -19,9 +19,31 @@ export const FLAT_GOVERNANCE_MODEL = "flat" as const;
 
 export const PEER_PROTOCOL = "explicit_spawn_signal" as const;
 
+/**
+ * Agent capability tier.
+ * - "read": only query/observation signals allowed (see READ_ONLY_SIGNALS).
+ * - "readwrite": all signals allowed.
+ */
+export type Capability = "read" | "readwrite";
+
+/**
+ * Signals that a "read"-capability agent may send.
+ * These are observation/query signals that do not mutate the repo.
+ */
+export const READ_ONLY_SIGNALS = new Set([
+  "spawn",
+  "share_state",
+  "read",
+  "search",
+  "challenge",
+  "verify",
+  "ack",
+]);
+
 export interface AgentIdentity {
   id: string;
   parentAgentId: string | null;
+  capability: Capability;
 }
 
 /**
@@ -41,6 +63,11 @@ export function canSignal(
 ): boolean {
   if (!fromAgent || !toAgent) return false;
   if (typeof signal !== "string") return false;
+
+  // Capability check: read-only agents may only send read-only signals.
+  if (fromAgent.capability === "read" && !READ_ONLY_SIGNALS.has(signal)) {
+    return false;
+  }
 
   // 1. Parent -> child (direct spawn relationship).
   if (toAgent.parentAgentId === fromAgent.id) {

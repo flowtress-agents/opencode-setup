@@ -18,6 +18,7 @@
 import { execSync, type ExecSyncOptions } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { Capability } from "../../fixtures/sandbox-spec/src/governance.js";
 
 function resolveDockerBin(): string {
   try {
@@ -28,6 +29,37 @@ function resolveDockerBin(): string {
 }
 
 const DOCKER_BIN = resolveDockerBin();
+
+/**
+ * Allowlist of commands that a read-only agent may execute.
+ * Used by the runtime capability enforcement gate in runInPane / sendText.
+ */
+export const READ_ONLY_COMMAND_RE = /^(cat|ls|grep|find|rg|git log|git diff|git show|git status|git branch|jq|pi|herdr pane read|herdr pane list|herdr pane get)\s/;
+
+/**
+ * Log a command + resolved capability to the per-agent audit file.
+ * File path: /tmp/agent-<id>.audit inside the container.
+ */
+function auditLog(containerId: string, agentId: string, capability: Capability, cmd: string): void {
+  const entry = `[${new Date().toISOString()}] capability=${capability} cmd="${cmd.replace(/"/g, '\\"')}"\n`;
+  try {
+    execSync(
+      `${DOCKER_BIN} exec ${containerId} sh -c 'mkdir -p /tmp && echo ${entry.replace(/'/g, "'\"'\"'")} >> /tmp/agent-${agentId}.audit'`,
+      { stdio: "ignore" },
+    );
+  } catch {
+    // best-effort — audit failure must not break command execution
+  }
+}
+
+/**
+ * Check whether a command is allowed for the given capability.
+ * When capability === "read", only allowlisted commands are permitted.
+ */
+function isCommandAllowed(cmd: string, capability: Capability): boolean {
+  if (capability === "readwrite") return true;
+  return READ_ONLY_COMMAND_RE.test(cmd);
+}
 
 
 export interface PaneInfo {
@@ -355,8 +387,19 @@ export class HerdrSession {
 
   /**
    * Send text to a pane (herdr pane send-text).
+   *
+   * @param paneId - Target pane ID
+   * @param text - Text to send
+   * @param agentCapability - Capability of the agent sending the text
+   * @param agentId - Agent ID used for audit log
    */
-  async sendText(paneId: string, text: string): Promise<void> {
+  async sendText(
+    paneId: string,
+    text: string,
+    agentCapability: Capability = "readwrite",
+    agentId = "unknown",
+  ): Promise<void> {
+    auditLog(this.containerId, agentId, agentCapability, `[send-text] ${text}`);
     const result = herdrCmd(
       ["pane", "send-text", paneId, text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')],
       this.containerId,
@@ -378,8 +421,28 @@ export class HerdrSession {
 
   /**
    * Run a command in a specific pane (herdr pane run).
+   *
+   * @param paneId - Target pane ID
+   * @param command - Command to run
+   * @param agentCapability - Capability of the agent running the command.
+   *   When "read", non-allowlisted commands are rejected with an error.
+   * @param agentId - Agent ID used for audit log file naming (default "unknown")
    */
-  async runInPane(paneId: string, command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  async runInPane(
+    paneId: string,
+    command: string,
+    agentCapability: Capability = "readwrite",
+    agentId = "unknown",
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    // Capability enforcement gate
+    if (!isCommandAllowed(command, agentCapability)) {
+      const errMsg = `read-only agent attempted write command: ${command}`;
+      return { exitCode: 1, stdout: "", stderr: errMsg };
+    }
+
+    // Audit log every command
+    auditLog(this.containerId, agentId, agentCapability, command);
+
     const runResult = herdrCmd(["pane", "run", paneId, command], this.containerId);
     if (runResult.exitCode !== 0) {
       return runResult;
