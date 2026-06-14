@@ -19,6 +19,17 @@ import { execSync, type ExecSyncOptions } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
+function resolveDockerBin(): string {
+  try {
+    return execSync("which docker", { encoding: "utf-8" }).trim();
+  } catch {
+    return "docker";
+  }
+}
+
+const DOCKER_BIN = resolveDockerBin();
+
+
 export interface PaneInfo {
   paneId: string;
   label: string;
@@ -40,6 +51,11 @@ let ptyUnavailable = false;
 let ptyUnavailableReason = "";
 
 async function loadNodePty(): Promise<typeof import("node-pty") | null> {
+  if (process.env.PTY_FALLBACK === "1") {
+    ptyUnavailable = true;
+    ptyUnavailableReason = "PTY_FALLBACK=1";
+    return null;
+  }
   if (ptyUnavailable) return null;
   if (nodePty) return nodePty;
   try {
@@ -84,7 +100,7 @@ function dockerExecCmd(cmd: string[]): { exitCode: number; stdout: string; stder
 // ---------------------------------------------------------------------------
 
 function herdrCmd(args: string[], containerId: string): { exitCode: number; stdout: string; stderr: string } {
-  return dockerExecCmd(["docker", "exec", containerId, "herdr", ...args]);
+  return dockerExecCmd([DOCKER_BIN, "exec", containerId, "herdr", ...args]);
 }
 
 function herdrCmdWithInput(
@@ -94,7 +110,7 @@ function herdrCmdWithInput(
 ): { exitCode: number; stdout: string; stderr: string } {
   const { spawnSync } = require("node:child_process");
   try {
-    const result = spawnSync("docker", ["exec", ...args], {
+    const result = spawnSync(DOCKER_BIN, ["exec", ...args], {
       input,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -128,6 +144,8 @@ export interface SpawnPaneResult {
  * Opens a PTY (via node-pty or docker-exec fallback), starts herdr,
  * and exposes pane management via the herdr CLI.
  */
+let _spawnPaneCounter = 0;
+
 export class HerdrSession {
   private containerId: string;
   private ptyProcess: import("node-pty").IPty | null = null;
@@ -163,34 +181,38 @@ export class HerdrSession {
     const session = new HerdrSession(containerId, usePty);
 
     if (usePty && pty) {
-      // Use node-pty to open a PTY exec into the container
-      session.ptyProcess = pty.spawn("docker", ["exec", "-i", "-t", containerId, "herdr"], {
-        name: term,
-        cwd,
-        env: { TERM: term, HOME: "/home/agent" },
-      });
+      try {
+        // Use node-pty to open a PTY exec into the container
+        session.ptyProcess = pty.spawn(DOCKER_BIN, ["exec", "-i", "-t", containerId, "herdr"], {
+          name: term,
+          cwd,
+          env: { ...process.env, TERM: term, HOME: "/home/agent" },
+        });
 
-      // Drain PTY output to avoid backpressure
-      session.ptyProcess.onData((data: string) => {
-        session.outputBuffers.push(data);
-      });
+        // Drain PTY output to avoid backpressure
+        session.ptyProcess.onData((data: string) => {
+          session.outputBuffers.push(data);
+        });
 
-      session.ptyProcess.onExit(({ exitCode }) => {
-        // PTY closed
-      });
-    } else {
-      // Fallback: docker exec -i -t (no real PTY, just streams)
-      // This is a best-effort fallback for environments where node-pty
-      // native bindings cannot be loaded (e.g. macOS ARM64 without Rosetta).
-      session.fallbackProcess = spawn("docker", ["exec", "-i", "-t", containerId, "herdr"], {
-        cwd,
-        env: { TERM: term, HOME: "/home/agent" },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+        session.ptyProcess.onExit(() => {
+          // PTY closed
+        });
+      } catch (err: any) {
+        console.warn(
+          `YELLOW[liberty-pty-fallback]: node-pty spawn failed: ${String(err?.message ?? err)}. ` +
+            "Falling back to docker-exec -i -t PTY emulation.",
+        );
+        session.usePty = false;
+        session.ptyProcess = null;
+      }
+    }
 
-      session.fallbackProcess.stdout?.on("data", (data: Buffer) => {
-        session.outputBuffers.push(session.decoder.write(data));
-      });
+    if (!session.ptyProcess) {
+      // Fallback: start herdr as a detached daemon inside the container.
+      const startResult = dockerExecCmd([DOCKER_BIN, "exec", "-d", containerId, "herdr"]);
+      if (startResult.exitCode !== 0) {
+        throw new Error(`failed to start herdr daemon:\n${startResult.stderr}`);
+      }
     }
 
     // Wait for herdr to initialize (pane 0 is auto-created)
@@ -206,7 +228,7 @@ export class HerdrSession {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const result = herdrCmd(["pane", "list"], this.containerId);
-      if (result.exitCode === 0 && result.stdout.includes("pane")) {
+      if (result.exitCode === 0 && /pane[_-]|pane_list/i.test(result.stdout)) {
         return;
       }
       await sleep(500);
@@ -218,15 +240,27 @@ export class HerdrSession {
    * Get the ID of pane 0 (the orchestrator pane, auto-created at startup).
    */
   async getPane0Id(): Promise<string> {
-    const result = herdrCmd(["pane", "list", "--workspace", "default"], this.containerId);
+    const result = herdrCmd(["pane", "list"], this.containerId);
     if (result.exitCode !== 0) {
       throw new Error(`herdr pane list failed:\n${result.stderr}`);
     }
-    // Parse pane list output to find pane 0
-    // Output format: pane-0 ... or JSON
-    const lines = result.stdout.split("\n").filter((l) => l.includes("pane-0") || l.includes('"id"'));
+
+    try {
+      const payload = JSON.parse(result.stdout.trim());
+      const panes = payload?.result?.panes;
+      if (Array.isArray(panes) && panes.length > 0) {
+        const paneId = panes[0]?.pane_id;
+        if (typeof paneId === "string" && paneId.length > 0) {
+          return paneId;
+        }
+      }
+    } catch {
+      // fall through to legacy text parsing
+    }
+
+    const lines = result.stdout.split("\n").filter((l) => l.includes("pane-0") || l.includes("pane_id"));
     for (const line of lines) {
-      const match = line.match(/pane-0|"id"\s*:\s*"([^"]+)"/);
+      const match = line.match(/pane-0|"pane_id"\s*:\s*"([^"]+)"/);
       if (match) return match[1] ?? "pane-0";
     }
     return "pane-0";
@@ -240,7 +274,8 @@ export class HerdrSession {
    * @returns SpawnPaneResult with paneId and tabId
    */
   async spawnPane(cmd: string[]): Promise<SpawnPaneResult> {
-    const name = `agent-${Date.now()}`;
+    _spawnPaneCounter += 1;
+    const name = `agent-${Date.now()}-${_spawnPaneCounter}`;
     const args = [
       "agent",
       "start",
@@ -259,26 +294,38 @@ export class HerdrSession {
       );
     }
 
-    // Find the newly created pane
-    const listResult = herdrCmd(["pane", "list"], this.containerId);
-    let paneId = `pane-unknown`;
-    let tabId = `tab-unknown`;
-
-    if (listResult.exitCode === 0) {
-      // Parse pane list to extract the new pane's ID
-      // The most recently created pane should be the last one listed
-      const lines = listResult.stdout.split("\n");
-      for (const line of lines) {
-        if (line.includes(name)) {
-          const idMatch = line.match(/pane-\d+/);
-          const tabMatch = line.match(/tab-\d+/);
-          if (idMatch) paneId = idMatch[0];
-          if (tabMatch) tabId = tabMatch[0];
+    for (const raw of [result.stdout, result.stderr]) {
+      const trimmed = raw.trim();
+      if (!trimmed.startsWith("{")) continue;
+      try {
+        const payload = JSON.parse(trimmed);
+        const agent = payload?.result?.agent;
+        if (typeof agent?.pane_id === "string" && typeof agent?.tab_id === "string") {
+          return { paneId: agent.pane_id, tabId: agent.tab_id };
         }
+      } catch {
+        // try next source
       }
     }
 
-    return { paneId, tabId };
+    const listResult = herdrCmd(["pane", "list"], this.containerId);
+    if (listResult.exitCode === 0) {
+      try {
+        const payload = JSON.parse(listResult.stdout.trim());
+        const panes = payload?.result?.panes;
+        if (Array.isArray(panes) && panes.length > 0) {
+          const newest = panes[panes.length - 1];
+          return {
+            paneId: newest.pane_id ?? "pane-unknown",
+            tabId: newest.tab_id ?? "tab-unknown",
+          };
+        }
+      } catch {
+        // legacy text parsing below
+      }
+    }
+
+    return { paneId: "pane-unknown", tabId: "tab-unknown" };
   }
 
   /**
@@ -326,7 +373,35 @@ export class HerdrSession {
    * Run a command in a specific pane (herdr pane run).
    */
   async runInPane(paneId: string, command: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    return herdrCmd(["pane", "run", paneId, command], this.containerId);
+    const runResult = herdrCmd(["pane", "run", paneId, command], this.containerId);
+    if (runResult.exitCode !== 0) {
+      return runResult;
+    }
+
+    await sleep(750);
+    const readResult = herdrCmd(
+      [
+        "pane",
+        "read",
+        paneId,
+        "--source",
+        "recent-unwrapped",
+        "--lines",
+        "30",
+        "--format",
+        "text",
+      ],
+      this.containerId,
+    );
+    if (readResult.exitCode !== 0) {
+      return readResult;
+    }
+
+    return {
+      exitCode: 0,
+      stdout: parsePaneReadOutput(readResult.stdout),
+      stderr: "",
+    };
   }
 
   /**
@@ -359,6 +434,21 @@ export class HerdrSession {
 // Utilities
 // ---------------------------------------------------------------------------
 
+
+function parsePaneReadOutput(raw: string): string {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (line.startsWith("# ")) return false;
+      if (/^[a-f0-9]{64}$/.test(line)) return false;
+      return true;
+    })
+    .join("\n")
+    .trim();
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -375,6 +465,6 @@ export async function herdrAvailableInContainer(containerId: string): Promise<bo
  * Check if pi is available in a container.
  */
 export async function piAvailableInContainer(containerId: string): Promise<boolean> {
-  const result = dockerExecCmd(["docker", "exec", containerId, "pi", "--version"]);
+  const result = dockerExecCmd([DOCKER_BIN, "exec", containerId, "pi", "--version"]);
   return result.exitCode === 0;
 }

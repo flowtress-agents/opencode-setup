@@ -21,7 +21,7 @@ import {
 } from "../../docker/container-launcher.js";
 import { HerdrSession, herdrAvailableInContainer, piAvailableInContainer } from "../../pty/herdr-session.js";
 import { openOrchestratorSession, waitForPiReady, closeOrchestratorSession } from "../../orchestration/orchestrator-session.js";
-import { spawnSubAgentViaHerdr, spawnMultipleSubAgents, assertUniquePaneIds } from "../../orchestration/multiplexing-session.js";
+import { spawnSubAgentViaHerdr, spawnMultipleSubAgents, assertUniquePaneIds, resetSubAgentCounter } from "../../orchestration/multiplexing-session.js";
 import { governanceCanSignal, verifyGovernanceLive } from "../../orchestration/governance-channel.js";
 import { openUserWorkspace, verifyUserWorkspaceIsolation } from "../../orchestration/user-workspace.js";
 import { promoteToSubOrchestrator, type PromotableSubAgentHandle } from "../../../fixtures/sandbox-spec/src/orchestration.js";
@@ -169,6 +169,10 @@ describeOrSkip("F2: pane-0 orchestrator", () => {
 // ---------------------------------------------------------------------------
 
 describeOrSkip("F3: multiplexing — spawnSubAgent", () => {
+  beforeEach(() => {
+    resetSubAgentCounter();
+  });
+
   beforeAll(async () => {
     const available = await dockerAvailable();
     if (!available) return;

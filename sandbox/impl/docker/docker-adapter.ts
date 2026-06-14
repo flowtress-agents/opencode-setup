@@ -6,7 +6,7 @@
  * image.base, user.*, entrypoint.* fields.
  */
 
-import { execSync, type ExecSyncOptions } from "node:child_process";
+import { execFileSync, execSync, type ExecFileSyncOptions } from "node:child_process";
 import { parse as parseToml } from "smol-toml";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,13 +40,14 @@ function readTomlSpec(): any {
 }
 
 function dockerExec(cmd: string[], input?: string): ExecResult {
-  const opts: ExecSyncOptions = {
+  const [file, ...args] = cmd;
+  const opts: ExecFileSyncOptions = {
     stdio: input ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
     encoding: "utf-8",
     ...(input ? { input } : {}),
   };
   try {
-    const stdout = execSync(cmd.join(" "), opts) as string;
+    const stdout = execFileSync(file, args, opts) as string;
     return { exitCode: 0, stdout: stdout ?? "", stderr: "" };
   } catch (err: any) {
     return {
@@ -66,16 +67,7 @@ export async function dockerBuild(
   imageName: string,
   buildArgs: Record<string, string> = {},
 ): Promise<DockerBuildResult> {
-  const args = [
-    "docker",
-    "build",
-    "--progress=plain",
-    "-t",
-    imageName,
-    "-f",
-    "-",
-    ".",
-  ];
+  const args = ["docker", "build", "-t", imageName, "-f", "-", "."];
   for (const [key, value] of Object.entries(buildArgs)) {
     args.push("--build-arg", `${key}=${value}`);
   }
@@ -148,8 +140,9 @@ export async function dockerRun(
 
   args.push(imageName);
 
+  // form=cmd maps to ENTRYPOINT ["/bin/bash","-c"] + CMD ["sleep infinity"]
   if (spec.entrypoint?.form === "cmd" && spec.entrypoint?.supports_sleep_infinity) {
-    args.push("sleep", "infinity");
+    args.push("-c", "sleep infinity");
   }
 
   const result = dockerExec(args);
@@ -245,7 +238,12 @@ export function generateDockerfile(spec: any): string {
     if (step.name === "apt-base" && step.cmd) {
       lines.push(`RUN ${step.cmd}`);
     } else if (step.name === "herdr") {
-      lines.push(`RUN ${step.cmd} || (${step.fallback_cmd})`);
+      const bin = step.bin_name ?? "herdr";
+      lines.push(
+        `RUN (${step.cmd} || (${step.fallback_cmd})) && ` +
+          `(command -v ${bin} || (test -x /root/.local/bin/${bin} && ln -sf /root/.local/bin/${bin} /usr/local/bin/${bin})) && ` +
+          `command -v ${bin}`,
+      );
     } else if (step.name === "picode" && step.npm) {
       lines.push(`RUN npm install -g ${step.npm}`);
     }

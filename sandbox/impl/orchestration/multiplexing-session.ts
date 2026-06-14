@@ -32,6 +32,11 @@ interface ActiveSubAgent {
 
 let _subAgentCounter = 0;
 
+export function resetSubAgentCounter(): void {
+  _subAgentCounter = 0;
+}
+
+
 /**
  * Spawn a sub-agent in a new herdr tab/workspace.
  *
@@ -52,7 +57,8 @@ export async function spawnSubAgentViaHerdr(
   }
 
   const agentName = agentConfig.name ?? `sub-agent-${_subAgentCounter}`;
-  const piArgs = agentConfig.agent === "pi" ? ["--version"] : ["bash", "--version"];
+  const agent = agentConfig.agent ?? "pi";
+  const piArgs = agent === "pi" ? ["pi", "--version"] : ["bash", "--version"];
 
   // Use herdr agent start to spawn a new pane with the sub-agent command
   const result = await herdrSession.spawnPane(piArgs);
@@ -73,13 +79,14 @@ export async function spawnMultipleSubAgents(
   parentPaneId: string,
   count: number,
 ): Promise<SubAgentHandle[]> {
-  const handles = await Promise.all(
-    Array.from({ length: count }, (_, i) =>
-      spawnSubAgentViaHerdr(herdrSession, parentPaneId, {
-        name: `sub-agent-${_subAgentCounter + i + 1}`,
+  const handles: SubAgentHandle[] = [];
+  for (let i = 0; i < count; i += 1) {
+    handles.push(
+      await spawnSubAgentViaHerdr(herdrSession, parentPaneId, {
+        name: `sub-agent-${i + 1}`,
       }),
-    ),
-  );
+    );
+  }
   return handles;
 }
 
