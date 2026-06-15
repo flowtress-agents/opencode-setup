@@ -546,7 +546,7 @@ async function spawnSubOrchestrator(
   const cmd = [
     "bash",
     "-lc",
-    `export AGENT_CAPABILITY=read; exec pi --system-prompt-file=${SUB_ORCHESTRATOR_PROMPT_PATH}`,
+    `export AGENT_CAPABILITY=read; exec pi --append-system-prompt "$(cat ${SUB_ORCHESTRATOR_PROMPT_PATH})"`,
   ];
   return session.spawnPaneInNewTab(cmd, {
     tabLabel: workstream.tabLabel,
@@ -711,7 +711,7 @@ export async function spawnFixer(
   const fixerCmd = [
     "bash",
     "-lc",
-    `export AGENT_CAPABILITY=readwrite; exec pi --system-prompt-file=${SURGICAL_FIXER_PROMPT_PATH}`,
+    `export AGENT_CAPABILITY=readwrite; exec pi --append-system-prompt "$(cat ${SURGICAL_FIXER_PROMPT_PATH})"`,
   ];
   const handle = await withRetry(
     () => session.spawnPane(fixerCmd),

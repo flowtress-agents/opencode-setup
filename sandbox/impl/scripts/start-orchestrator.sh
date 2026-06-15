@@ -95,7 +95,7 @@ echo "[start-orchestrator] Booting pi in pane ${PANE_ID}..."
 # Set the read-only capability env, then exec pi with the system prompt file.
 # Use `pane run` so the command actually executes (herdr pane send-text only
 # writes literal text, which would leave pi in the shell).
-herdr pane run "$PANE_ID" "export AGENT_CAPABILITY=read && exec pi --system-prompt-file ${ORCH_PROMPT_FILE}"
+herdr pane run "$PANE_ID" "export AGENT_CAPABILITY=read && exec pi --append-system-prompt \"\$(cat ${ORCH_PROMPT_FILE})\""
 sleep 1
 
 # ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ for ws in "${WORKSTREAMS[@]}"; do
   # Identify the first pane in the new tab so we can boot the sub-orchestrator.
   sub_pane_id="${tab_id}-1"
   herdr pane run "$sub_pane_id" \
-    "export AGENT_CAPABILITY=read && export SUB_ORCH_WORKSTREAM=${ws} && exec pi --system-prompt-file ${ORCH_PROMPT_FILE}"
+    "export AGENT_CAPABILITY=read && export SUB_ORCH_WORKSTREAM=${ws} && exec pi --append-system-prompt \"\$(cat ${ORCH_PROMPT_FILE})\""
 done
 
 # ---------------------------------------------------------------------------

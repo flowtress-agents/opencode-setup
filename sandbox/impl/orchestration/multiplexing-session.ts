@@ -125,7 +125,7 @@ export async function spawnSubAgentViaHerdr(
   // `pi --version` was Challenge 15's target; the spawn-into-tab path
   // still works for a long-lived `bash` because herdr's `agent start`
   // exec's the command in the new pane.
-  const piArgs = agent === "pi" ? ["bash", "-lc", "exec pi --system-prompt-file /etc/prompts/sub-orchestrator.md"] : ["bash", "-lc", "exec bash"];
+  const piArgs = agent === "pi" ? ["bash", "-lc", "exec pi --append-system-prompt \"$(cat /etc/prompts/sub-orchestrator.md)\""] : ["bash", "-lc", "exec bash"];
 
   // Spec-2 / Challenge 8: tabPlacement is now respected. `"tab"` lands
   // in a fresh tab via spawnPaneInNewTab; `"pane"` lands in the
