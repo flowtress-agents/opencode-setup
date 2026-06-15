@@ -1,0 +1,118 @@
+# Spec-2 launch-sandbox contract.
+#
+# This file is the spec-2 counterpart to the v1 launch-sandbox.toml
+# (micro-spec/sandbox/scripts/launch-sandbox.toml) and the
+# spec/sandbox/scripts/launch-sandbox.toml drafts. It is the data-driven
+# contract consumed by the spec-2 runtime (see sandbox/src/launch-sandbox.ts).
+#
+# Spec-2 introduces the `[[workspace]]` array as a top-level layout
+# declaration. Each `[[workspace]]` block is either:
+#   - an orchestrator workspace (default; role omitted or "orchestrator"),
+#     which is the one the orchestrator (pi in pane 0) lives in, or
+#   - a user workspace (role = "user"), which is reserved for direct
+#     human interaction.
+#
+# See sandbox/CONTEXT.md §1.2 (orchestrator workspace) and §1.4
+# (user workspace) for the canonical definitions. ADR 0001 pins the
+# one-orchestrator-per-workspace invariant; ADR 0002 pins the
+# runtime-only enforcement of the user-workspace reservation.
+
+[meta]
+name = "launch-sandbox"
+version = "0.3.0"
+description = "Spec-2 contract: orchestrator + user workspace pair, validator-enforced."
+
+# F2: herdr auto-allocates exactly one pane at startup (pane 0). Sub-agent
+# panes are on demand and do not count toward this count.
+[pane_config]
+pane_startup_count = 1
+
+[image]
+base = "node:22-bookworm"
+agent_uid = 1000
+agent_gid = 1000
+agent_user = "agent"
+# node:22-bookworm already has a 'node' user at uid 1000. The launcher
+# must detect this collision and either pick the first free uid
+# (1001) or override via the chosen strategy.
+uid_collision_strategy = "shift_to_first_free"
+
+[build]
+# stdin heredoc hung under Colima; tempfile is mandatory.
+context_strategy = "tempfile"
+build_timeout_sec = 180
+registry_fallbacks = ["docker.io", "ghcr.io"]
+pull_timeout_sec = 60
+registry_fallbacks_required = true
+
+[install]
+[[install.steps]]
+name = "apt-base"
+cmd = "apt-get update && apt-get install -y git curl jq && rm -rf /var/lib/apt/lists/*"
+
+[[install.steps]]
+name = "herdr"
+cmd = "curl -fsSL https://herdr.dev/install.sh | sh"
+fallback_cmd = "curl -fsSL https://github.com/ogulcancelik/herdr/releases/latest/download/herdr-linux-aarch64 -o /usr/local/bin/herdr && chmod +x /usr/local/bin/herdr"
+fallback_cmd_required = true
+bin_name = "herdr"
+must_succeed = true
+
+[[install.steps]]
+name = "picode"
+npm = "@earendil-works/pi-coding-agent"
+cmd = "npm install -g @earendil-works/pi-coding-agent"
+bin_name = "pi"
+must_succeed = true
+
+[entrypoint]
+form = "cmd"
+cmd = ["/bin/bash"]
+supports_sleep_infinity = true
+
+# Container's main user. Distinct from the per-workspace `[[workspace]]`
+# blocks below, which describe herdr-level layout inside that user.
+[user]
+name = "user"
+workdir = "/home/agent/user-workspace"
+
+# Workspace roles. The user workspace is the only one with role="user";
+# the orchestrator workspace (default) lives in the first [[workspace]] block.
+[[workspace]]
+label = "user"
+role = "user"
+tab = [{ label = "user", cmd = ["bash"] }]
+
+[health]
+post_build_checks = [
+  "docker image inspect ${IMAGE_NAME}",
+  "docker run --rm ${IMAGE_NAME} herdr --version",
+  "docker run --rm ${IMAGE_NAME} pi --version"
+]
+post_build_checks_required = true
+post_start_timeout_sec = 30
+
+# Orchestration (F1-F6) — kept minimal in spec-2 because the runtime
+# derives everything from the `[[workspace]]` blocks above. See
+# fixtures/sandbox-spec/src/{governance,multiplexing,orchestration}.ts
+# for the spec-level orchestration types and helpers.
+[launch]
+mode = "single-container"
+
+[pane_delegation]
+mode = "spawn_new_tab"
+one_pane_per_agent = true
+parent_pane_required = true
+tab_per_agent_session = true
+
+[limits]
+max_sub_agents_per_orchestrator = 8
+max_pane_depth = 3
+
+[sub_orchestrator]
+promotion_required = true
+max_depth = 3
+
+[governance]
+model = "flat"
+peer_protocol = "explicit_spawn_signal"

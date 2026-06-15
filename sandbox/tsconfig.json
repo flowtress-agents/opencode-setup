@@ -15,6 +15,7 @@
     "fixtures/**/*",
     "tdad-tests/**/*",
     "impl/**/*",
+    "src/**/*",
     "vitest.config.ts"
   ]
 }
