@@ -8,7 +8,7 @@
  * command, returning a real SubAgentHandle with real pane/tab IDs.
  */
 
-import { HerdrSession, type SpawnPaneResult } from "../pty/herdr-session.js";
+import { HerdrSession, type SpawnPaneResult, snapshotPaneIds, reconcileSpawnedPaneId } from "../pty/herdr-session.js";
 import {
   MAX_SUB_AGENTS_PER_ORCHESTRATOR,
   MAX_PANE_DEPTH,
@@ -131,7 +131,22 @@ export async function spawnSubAgentViaHerdr(
   // in a fresh tab via spawnPaneInNewTab; `"pane"` lands in the
   // parent's tab via spawnPane(cmd, { targetTabId }). Both call sites
   // reject `targetTabId` labels starting with `user-` (per ADR 0002).
+  //
+  // Iteration 2 fix (Stage C, Group 1 / ADR 0009): every spawn call
+  // is now followed by a `pane list` JSON lookup that reconciles the
+  // returned pane id against a before-snapshot. herdr v0.6.10's
+  // `agent start` response shape varies; the reconciliation helper
+  // identifies the freshly-created pane by diffing the pane list
+  // before and after, and falls back to the raw response on
+  // disagreement (with a YELLOW `liberty-pane-id-reconcile` warning).
+  // The 3-line fix is: (1) snapshot, (2) spawn, (3) reconcile.
   const placement = agentConfig.tabPlacement ?? DEFAULT_TAB_PLACEMENT;
+  const containerId = (herdrSession as any).getContainerId
+    ? (herdrSession as any).getContainerId()
+    : null;
+  const beforePaneIds = containerId
+    ? snapshotPaneIds(containerId)
+    : new Set<string>();
   const result: SpawnPaneResult =
     placement === "tab"
       ? await herdrSession.spawnPaneInNewTab(piArgs, {
@@ -140,10 +155,15 @@ export async function spawnSubAgentViaHerdr(
       : await herdrSession.spawnPane(piArgs, {
           targetTabId: agentConfig.parentTabId,
         });
+  const reconciled: SpawnPaneResult = containerId
+    ? reconcileSpawnedPaneId(containerId, beforePaneIds, result, {
+        tabId: result.tabId,
+      })
+    : result;
 
   return {
-    paneId: result.paneId,
-    tabId: result.tabId,
+    paneId: reconciled.paneId,
+    tabId: reconciled.tabId,
     parentPaneId,
   };
 }

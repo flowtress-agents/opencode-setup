@@ -793,6 +793,140 @@ function parseWorkspaceId(raw: string): string | null {
   return null;
 }
 
+/**
+ * Pane-id reconciliation helper (Iteration 2 / Stage C, ADR 0009).
+ *
+ * After `spawnPane` returns, the runtime may not have a reliable
+ * pane id for the freshly-spawned pane: herdr v0.6.10's
+ * `agent start` response shape varies, and the legacy `pane list`
+ * fallback returns the *last* pane globally, not the pane the
+ * call actually created (e.g. when concurrent test traffic shifts
+ * the order).
+ *
+ * The reconciliation strategy:
+ *   1. Snapshot the pane list BEFORE the spawn call.
+ *   2. Call `spawnPane` and capture whatever the response says.
+ *   3. Re-query `pane list` and identify the NEW panes that did
+ *      not exist in the before-snapshot.
+ *   4. If a `tabId` is supplied, prefer panes whose `tab_id`
+ *      matches it (a sub-agent spawning into a known tab).
+ *   5. Otherwise pick the lowest-id pane in the new set.
+ *   6. On any failure (lookup error, no new panes), log a YELLOW
+ *      `liberty-pane-id-reconcile` warning and return
+ *      `parseAgentPaneId`-style fallback `{ paneId, tabId }`.
+ *
+ * The snapshot is a `Set<string>` of pane ids. Construction is
+ * pure parsing — no side effects — so the helper is safe to call
+ * from a test path that has already done its own `pane list`.
+ *
+ * @param containerId - Container id for the `herdr pane list` call
+ * @param beforePaneIds - Pane id snapshot taken BEFORE the spawn
+ * @param fallback - The {paneId, tabId} returned by the spawn call
+ *   itself; used as the last-resort value if reconciliation cannot
+ *   find a better match.
+ * @param opts.tabId - If set, prefer panes whose `tab_id` matches
+ * @returns A reconciled SpawnPaneResult
+ */
+export function reconcileSpawnedPaneId(
+  containerId: string,
+  beforePaneIds: Set<string>,
+  fallback: SpawnPaneResult,
+  opts: { tabId?: string } = {},
+): SpawnPaneResult {
+  const result = herdrCmd(["pane", "list"], containerId);
+  if (result.exitCode !== 0) {
+    console.warn(
+      `YELLOW[liberty-pane-id-reconcile]: herdr pane list failed (exit=${result.exitCode}); ` +
+        `falling back to spawnPane response (paneId=${fallback.paneId}, tabId=${fallback.tabId}).`,
+    );
+    return fallback;
+  }
+  let panes: any[];
+  try {
+    const payload = JSON.parse(result.stdout.trim());
+    panes = Array.isArray(payload?.result?.panes) ? payload.result.panes : [];
+  } catch (err: any) {
+    console.warn(
+      `YELLOW[liberty-pane-id-reconcile]: herdr pane list JSON parse failed: ${err?.message ?? err}; ` +
+        `falling back to spawnPane response (paneId=${fallback.paneId}, tabId=${fallback.tabId}).`,
+    );
+    return fallback;
+  }
+  // New panes = those in the current list that were not in the
+  // before-snapshot. This is robust to concurrent test traffic
+  // because we diff the actual id set, not the list order.
+  const newPanes = panes.filter(
+    (p: any) =>
+      typeof p?.pane_id === "string" && !beforePaneIds.has(p.pane_id),
+  );
+  if (newPanes.length === 0) {
+    console.warn(
+      `YELLOW[liberty-pane-id-reconcile]: no new panes found in herdr pane list (before=${beforePaneIds.size}, ` +
+        `now=${panes.length}); falling back to spawnPane response (paneId=${fallback.paneId}, tabId=${fallback.tabId}).`,
+    );
+    return fallback;
+  }
+  // If a tabId hint is supplied, prefer panes in that tab.
+  let candidates = newPanes;
+  if (typeof opts.tabId === "string" && opts.tabId.length > 0) {
+    const inTab = newPanes.filter((p: any) => p?.tab_id === opts.tabId);
+    if (inTab.length > 0) {
+      candidates = inTab;
+    }
+  }
+  // Among the candidates, pick the pane with the lowest id so
+  // sub-orchestrators get the root pane of the new tab.
+  let best: any = candidates[0];
+  let bestNum = Number.POSITIVE_INFINITY;
+  for (const p of candidates) {
+    const m = /-(\d+)$/.exec(p.pane_id);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n < bestNum) {
+      bestNum = n;
+      best = p;
+    }
+  }
+  if (!best || typeof best?.pane_id !== "string") {
+    return fallback;
+  }
+  return {
+    paneId: best.pane_id,
+    tabId:
+      typeof best.tab_id === "string" && best.tab_id.length > 0
+        ? best.tab_id
+        : fallback.tabId,
+  };
+}
+
+/**
+ * Snapshot the pane-id set from a `herdr pane list` response.
+ * Used by `reconcileSpawnedPaneId` callers to record the
+ * before-spawn state. The snapshot is the diff basis for
+ * identifying newly-created panes.
+ *
+ * Returns an empty Set on parse failure (a non-fatal best-effort).
+ */
+export function snapshotPaneIds(containerId: string): Set<string> {
+  const out = new Set<string>();
+  const result = herdrCmd(["pane", "list"], containerId);
+  if (result.exitCode !== 0) return out;
+  try {
+    const payload = JSON.parse(result.stdout.trim());
+    const panes = payload?.result?.panes;
+    if (Array.isArray(panes)) {
+      for (const p of panes) {
+        if (typeof p?.pane_id === "string" && p.pane_id.length > 0) {
+          out.add(p.pane_id);
+        }
+      }
+    }
+  } catch {
+    // best-effort — return whatever we accumulated
+  }
+  return out;
+}
+
 export { parseTabId, parseRootPaneId, parseAgentPaneId, parseWorkspaceId };
 
 function sleep(ms: number): Promise<void> {
