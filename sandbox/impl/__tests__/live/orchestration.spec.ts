@@ -24,6 +24,7 @@ import { openOrchestratorSession, waitForPiReady, closeOrchestratorSession } fro
 import { spawnSubAgentViaHerdr, spawnMultipleSubAgents, assertUniquePaneIds, resetSubAgentCounter } from "../../orchestration/multiplexing-session.js";
 import { governanceCanSignal, verifyGovernanceLive } from "../../orchestration/governance-channel.js";
 import { openUserWorkspace, verifyUserWorkspaceIsolation } from "../../orchestration/user-workspace.js";
+import { spawnOrchestrationTeam, type WorkstreamSpec } from "../../orchestration/team-spawner.js";
 import { promoteToSubOrchestrator, type PromotableSubAgentHandle } from "../../../fixtures/sandbox-spec/src/orchestration.js";
 import type { AgentIdentity } from "../../../fixtures/sandbox-spec/src/governance.js";
 
@@ -432,5 +433,114 @@ describeOrSkip("F6: user workspace isolation", () => {
     // The user workspace tab must not be pane-0 (orchestrator pane)
     expect(userWs.tabId).not.toBe("pane-0");
     expect(userWs.tabId).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F7: orchestrator refuses to spawn into the user tab
+// ---------------------------------------------------------------------------
+//
+// Per the plan: the user tab is reserved by name convention (label starts
+// with `user-`). The runtime hook in herdr-session.spawnPane must refuse
+// any targetTabId whose tab label starts with `user-`. This guarantees
+// the "no herdr fork" property: even if a misbehaving sub-agent tries
+// to spawnPane into the user tab, the orchestrator runtime rejects.
+//
+// These are RED tests: they will fail until spawnOrchestrationTeam adds
+// the userWorkspace field and spawnPane adds the targetTabId guard.
+
+describeOrSkip("F7: orchestrator refuses to spawn into the user tab", { hookTimeout: 30_000 }, () => {
+  beforeAll(async () => {
+    const available = await dockerAvailable();
+    if (!available) return;
+
+    if (!ctx.containerId) {
+      const result = await launchFromSpec();
+      ctx.containerId = result.containerId;
+    }
+
+    if (!ctx.herdrSession) {
+      ctx.herdrSession = await HerdrSession.open({ containerId: ctx.containerId });
+      ctx.orchestratorPane0 = await ctx.herdrSession.getPane0Id();
+    }
+  });
+
+  afterAll(async () => {
+    if (ctx.herdrSession) {
+      await ctx.herdrSession.close();
+      ctx.herdrSession = null;
+    }
+    if (ctx.containerId) {
+      await cleanupContainer(ctx.containerId);
+      ctx.containerId = "";
+    }
+  });
+
+  it("spawnPane refuses a target tab whose label starts with user-", async () => {
+    const available = await dockerAvailable();
+    if (!available) return;
+    expect(ctx.herdrSession).not.toBeNull();
+
+    // First, get a real user tab id from spawnOrchestrationTeam so the
+    // targetTabId we pass is a real id (not a synthetic placeholder).
+    const CANONICAL: WorkstreamSpec[] = [
+      { name: "scaffold_2", tabLabel: "orch-scaffold_2" },
+      { name: "git-worktree", tabLabel: "orch-git-worktree" },
+      { name: "deps", tabLabel: "orch-deps" },
+    ];
+    const team = await spawnOrchestrationTeam(ctx.herdrSession!, CANONICAL);
+    const userTabId = team.userWorkspace.tabId;
+
+    // @ts-expect-error — plan §1.3 will add a second `targetTabId` option
+    // to spawnPane. The runtime hook refuses any tab whose label starts
+    // with `user-`. Until the impl lands, this call is structurally
+    // invalid; the test will throw a compile error until then.
+    await expect(
+      ctx.herdrSession!.spawnPane(["bash"], { targetTabId: userTabId }),
+    ).rejects.toThrow(/refused/i);
+  });
+
+  it("user tab is preserved across multiple spawnOrchestrationTeam calls", async () => {
+    const available = await dockerAvailable();
+    if (!available) return;
+    expect(ctx.herdrSession).not.toBeNull();
+
+    const CANONICAL: WorkstreamSpec[] = [
+      { name: "scaffold_2", tabLabel: "orch-scaffold_2" },
+      { name: "git-worktree", tabLabel: "orch-git-worktree" },
+      { name: "deps", tabLabel: "orch-deps" },
+    ];
+    const first = await spawnOrchestrationTeam(ctx.herdrSession!, CANONICAL);
+    const second = await spawnOrchestrationTeam(ctx.herdrSession!, CANONICAL);
+
+    // Chosen behavior: each spawnOrchestrationTeam call produces a
+    // distinct userWorkspace pane (a new bash tab). The workspaceId is
+    // shared because the user tab lives in the same workspace as the
+    // orchestrator. The two user panes must be distinct (the second
+    // call should NOT reuse the first user tab — that would leak state
+    // across orchestrator sessions).
+    expect(first.userWorkspace.workspaceId).toBe(second.userWorkspace.workspaceId);
+    expect(first.userWorkspace.paneId).not.toBe(second.userWorkspace.paneId);
+  });
+
+  it("user tab is in pane 0 of its tab", async () => {
+    const available = await dockerAvailable();
+    if (!available) return;
+    expect(ctx.herdrSession).not.toBeNull();
+
+    const CANONICAL: WorkstreamSpec[] = [
+      { name: "scaffold_2", tabLabel: "orch-scaffold_2" },
+      { name: "git-worktree", tabLabel: "orch-git-worktree" },
+      { name: "deps", tabLabel: "orch-deps" },
+    ];
+    const team = await spawnOrchestrationTeam(ctx.herdrSession!, CANONICAL);
+
+    // Per plan §1.4 (F7 test 3): the user tab hosts exactly one bash
+    // pane — pane 0 of its tab. The expected wire format is a paneId
+    // that ends with `-1` (this matches the test plan's stated
+    // invariant; if the actual herdr wire format differs, the
+    // implementation will need to adapt the assertion or the
+    // reservation mechanism).
+    expect(team.userWorkspace.paneId).toMatch(/-1$/);
   });
 });

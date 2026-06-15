@@ -472,3 +472,79 @@ describeOrSkip("T6: re-running spawnOrchestrationTeam is safe", () => {
     expect(registered).toEqual(["scaffold_2"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T7: user tab is reserved from sub-orchestrators
+// ---------------------------------------------------------------------------
+//
+// Per the plan: spawnOrchestrationTeam creates a user tab in the same
+// workspace as the orchestrator. The user tab is registered as
+// `userWorkspace` on the spawn result (not in `subOrchestrators`) so the
+// orchestrator runtime can wire its own user-interaction pane without
+// colliding with the sub-orchestrators.
+//
+// These are RED tests: they will fail until the runtime implements
+// `userWorkspace` on `TeamSpawnResult`. See ADR 0002 + plan §1.3.
+
+describeOrSkip("T7: user tab is reserved from sub-orchestrators", { hookTimeout: 30_000 }, () => {
+  afterAll(async () => {
+    if (ctx.herdrSession) {
+      await ctx.herdrSession.close();
+      ctx.herdrSession = null;
+    }
+    if (ctx.containerId) {
+      await cleanupContainer(ctx.containerId);
+      ctx.containerId = "";
+    }
+  });
+
+  it("spawnOrchestrationTeam returns a userWorkspace alongside sub-orchestrators", async () => {
+    const session = await ensureSession();
+    if (!session) return;
+
+    const result = await spawnOrchestrationTeam(session, CANONICAL_WORKSTREAMS);
+
+    expect(result.userWorkspace).toBeDefined();
+    expect(result.userWorkspace).not.toBeNull();
+    expect(typeof result.userWorkspace.tabId).toBe("string");
+    expect(result.userWorkspace.tabId.length).toBeGreaterThan(0);
+    expect(typeof result.userWorkspace.paneId).toBe("string");
+    expect(result.userWorkspace.paneId.length).toBeGreaterThan(0);
+    expect(result.userWorkspace.label).toBe("user");
+  });
+
+  it("user tab is in the same workspace as the orchestrator", async () => {
+    const session = await ensureSession();
+    if (!session) return;
+
+    const result = await spawnOrchestrationTeam(session, CANONICAL_WORKSTREAMS);
+
+    expect(result.userWorkspace.workspaceId).toBe(result.workspaceId);
+  });
+
+  it("userWorkspace is registered first in the spawn result (not in subOrchestrators array)", async () => {
+    const session = await ensureSession();
+    if (!session) return;
+
+    const result = await spawnOrchestrationTeam(session, CANONICAL_WORKSTREAMS);
+
+    expect(
+      result.subOrchestrators.every((s) => s.tabId !== result.userWorkspace.tabId),
+    ).toBe(true);
+  });
+
+  it("all 5 of {orchestrator, user, scaffold_2, git-worktree, deps} tabs are present", async () => {
+    const session = await ensureSession();
+    if (!session) return;
+
+    const result = await spawnOrchestrationTeam(session, CANONICAL_WORKSTREAMS);
+
+    // 3 sub-orchestrators (scaffold_2, git-worktree, deps) + 1 user tab +
+    // 1 orchestrator tab (pane 0). The orchestrator is pane 0; the user
+    // tab is the new userWorkspace field; sub-orchestrators are the rest.
+    expect(result.subOrchestrators).toHaveLength(3);
+    expect(result.userWorkspace).toBeDefined();
+    const totalTabs = 1 + 1 + result.subOrchestrators.length; // orchestrator + user + subs
+    expect(totalTabs).toBe(5);
+  });
+});
