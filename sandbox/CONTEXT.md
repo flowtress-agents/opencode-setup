@@ -939,10 +939,109 @@ recorded here as the contracts the green phase must implement.
 
 ---
 
-## 9. References
+## 9. Iteration 2 clarifications
+
+The Stage A diagnosis identified five ambiguities in the spec/impl split
+that the surgical-fixer team resolved in iteration 2. This section
+records the resolved questions so future readers see the contract, not
+the back-and-forth.
+
+### 8.1 `spawnPane` (no `--tab`) is broken in herdr v0.6.10 — reconcile, don't trust
+
+The spec's `spawnSubAgent` runtime (`impl/orchestration/multiplexing-session.ts:spawnSubAgentViaHerdr`)
+calls `HerdrSession.spawnPane(cmd, opts)`, which in turn calls
+`herdr agent start`. The raw `herdr agent start` response in v0.6.10
+does not always carry a usable `pane_id`; the legacy `pane list` fallback
+returns the *last* pane globally (not the pane the call actually created,
+because concurrent traffic can shift the order between the call and the
+list query).
+
+**Resolution.** Every `spawnPane` call is now followed by a `pane list`
+JSON lookup that reconciles the returned pane id against a
+before-snapshot. The new pane id is the lowest-id entry in the new tab
+that was not present in the before-snapshot. On any failure to find a
+new pane, the helper logs a YELLOW `liberty-pane-id-reconcile` warning
+and returns the original `parseAgentPaneId` response (so the suite
+still gets a handle). See ADR 0009 for the full pattern.
+
+The spec now mandates reconciliation rather than raw `herdr agent
+start` (matches ADR 0004's "use the multiplex API" guidance).
+
+### 8.2 The `_subAgentCounter` is per-process, not per-orchestrator
+
+The counter at `impl/orchestration/multiplexing-session.ts:34` is a
+module-level `let` reset by `HerdrSession.open` (via
+`resetSubAgentCounter()`) in `impl/pty/herdr-session.ts:220-225`. The
+reset runs on every session open, so a fresh `HerdrSession` gets a
+fresh budget — but two orchestrators running in the same Node process
+*share* the counter, and the budget is not per-orchestrator.
+
+**Resolution.** The counter is *per-process*. Per-orchestrator ownership
+is a future-work item; iteration 2 does not change the counter's
+scope. The live test F3 ("sub-agent count respects
+MAX_SUB_AGENTS_PER_ORCHESTRATOR (8)") opens a fresh `HerdrSession` per
+test via `beforeEach`, so the reset is observable and the budget
+appears per-test (and therefore per-orchestrator at the test
+granularity). The counter is documented as per-process so a future
+reader does not assume per-orchestrator semantics.
+
+### 8.3 `pi --version` is no longer the smoke test for a running pi REPL
+
+`pi --version` is a one-shot CLI flag that exits immediately. Running
+it through `herdr pane run` (`runInPane`) launches a *new* `pi` process
+inside the pane, which then exits — and the F2 hook in
+`__tests__/live/orchestration.spec.ts` waits up to 30s for the REPL
+prompt to come back. The REPL never returns because the spawned
+`pi --version` process is the only thing in the pane and it has
+already exited. The hook times out at 30s.
+
+**Resolution.** F2 now uses `docker exec <container> pi --version`
+directly (bypasses the herdr pane PTY entirely) to assert that the
+binary is installed and runs. The smoke test is "binary present +
+executable"; it does not need a live REPL. F2's hook timeout is
+raised to 60s as a defense-in-depth budget for `docker exec`. The
+F2 assertion is now:
+
+```ts
+const piVersion = execSync(`docker exec ${ctx.containerId} pi --version`, { encoding: "utf-8" });
+expect(piVersion.trim()).toMatch(/\d+\.\d+/);
+```
+
+If a future reader wants to assert "the orchestrator pane has a live
+REPL prompt", the canonical mechanism is to poll `herdr pane get
+<pane>` for state `running` (or to use `runInPane("echo ok")` with a
+short timeout) — not `pi --version`.
+
+### 8.4 `canSpawnSubAgent` now propagates `parentDepth` end-to-end
+
+The `canSpawnSubAgent` guard accepts `opts.parentDepth`. The
+multiplexing-session entry point defaulted `parentDepth` to `0` (top-
+level orchestrator), which kept the multiplex path safe for the
+common case but silently mis-classified nested callers
+(sub-orchestrators spawning adversarials with `tabPlacement: "tab"`).
+
+**Resolution.** Callers that know they are nested deeper MUST call
+`canSpawnSubAgent` directly first and pass an explicit
+`parentDepth`. The multiplex entry point's default of `0` is
+documented as a conservative default for the top-level orchestrator
+case. The can-spawn-sub-agent spec test
+(`__tests__/live/can-spawn-sub-agent.spec.ts`) pins the guard's
+behaviour at depths 0, 1, 2.
+
+### 8.5 `_subAgentCounter` scope is documented (no behavior change)
+
+The counter is module-level and per-process. The reset hook
+(`resetSubAgentCounter`) runs at `HerdrSession.open` so a fresh
+session starts at 0. The scope is per-process; per-orchestrator
+ownership is a future-work item (iteration 2 leaves the
+implementation as-is, only the documentation changes).
+
+---
+
+## 10. References
 
 - Plan: `~/.cursor/plans/spec-2_orchestrator_v2_+_user_workspace_7cb68ec4.plan.md`
-- ADRs: `docs/adr/0001-orchestrator-per-workspace.md`, `docs/adr/0002-user-workspace.md`, `docs/adr/0003-orchestrator-lifecycle.md`, `docs/adr/0004-sub-orchestrator-tabs.md`, `docs/adr/0005-readwrite-sub-agents.md`
+- ADRs: `docs/adr/0001-orchestrator-per-workspace.md`, `docs/adr/0002-user-workspace.md`, `docs/adr/0003-orchestrator-lifecycle.md`, `docs/adr/0004-sub-orchestrator-tabs.md`, `docs/adr/0005-readwrite-sub-agents.md`, `docs/adr/0009-pane-id-reconciliation.md`
 - Spec: `fixtures/sandbox-spec/src/{governance,multiplexing,orchestration,user-workspace}.ts`, `docs/spec/sections/05-orchestrator-user-workspace.md`, `docs/spec/sections/06-sub-orchestrator-sub-agent.md`
 - Impl: `impl/orchestration/{orchestrator-session,team-spawner}.ts`, `impl/pty/herdr-session.ts`
 - Prior ADRs: `impl/docs/ADR-0006-live-test-architecture.md`, `impl/docs/ADR-0007-readonly-orchestrator.md`
