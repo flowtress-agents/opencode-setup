@@ -12,6 +12,7 @@ import { HerdrSession, type SpawnPaneResult } from "../pty/herdr-session.js";
 import {
   MAX_SUB_AGENTS_PER_ORCHESTRATOR,
   MAX_PANE_DEPTH,
+  DEFAULT_TAB_PLACEMENT,
   type SubAgentHandle,
   type SubAgentConfig,
 } from "../../fixtures/sandbox-spec/src/multiplexing.js";
@@ -38,6 +39,48 @@ export function resetSubAgentCounter(): void {
 
 
 /**
+ * Pure guard: should we allow `spawnSubAgentViaHerdr` to proceed?
+ *
+ * Spec-2 plan §2.2 + Challenge 8 fix: this is the runtime enforcement
+ * of the depth-4 nesting rule, the user-tab reservation, and the
+ * `tabPlacement` discriminator. It runs BEFORE any herdr call so the
+ * decision is observable, deterministic, and side-effect-free.
+ *
+ * @param parentTabId - The tab of the parent orchestrator/sub-orchestrator
+ * @param agentConfig - The sub-agent config (tabPlacement, name, etc.)
+ * @param opts.parentDepth - How deep the parent is in the nesting tree
+ *   (0 = top-level orchestrator, 1 = sub-orchestrator, 2 = would-be
+ *   sub-sub-orchestrator; the spec caps at 2 sub-orchestrators)
+ * @param opts.parentIsUserTab - True if the parent is the reserved user
+ *   tab; a sub-agent can never spawn into the user tab
+ * @returns `{ ok: true }` if spawn should proceed; otherwise
+ *   `{ ok: false, reason: <machine-readable code> }`
+ */
+export function canSpawnSubAgent(
+  _parentTabId: string,
+  agentConfig: SubAgentConfig,
+  opts: { parentDepth: number; parentIsUserTab: boolean } = { parentDepth: 0, parentIsUserTab: false },
+):
+  | { ok: true }
+  | { ok: false; reason: "depth-4" | "user-tab-target" | "tab-placement-mismatch" } {
+  // Rule 1: a sub-agent may never spawn into the user tab.
+  if (opts.parentIsUserTab) {
+    return { ok: false, reason: "user-tab-target" };
+  }
+  // Rule 2: tabPlacement="tab" on a parent that is itself a sub-orchestrator
+  // is the depth-4 nesting the spec forbids. Sub-orchestrators must be
+  // siblings of the top-level orchestrator tab, not nested deeper.
+  if ((agentConfig.tabPlacement ?? DEFAULT_TAB_PLACEMENT) === "tab" && opts.parentDepth >= 1) {
+    return { ok: false, reason: "depth-4" };
+  }
+  // Rule 3: tabPlacement="tab" with depth=0 is fine (top-level sub-orch).
+  // tabPlacement="pane" is fine at any depth. Everything else is the
+  // documented spec contract, so we don't reject other combinations.
+  return { ok: true };
+}
+
+
+/**
  * Spawn a sub-agent in a new herdr tab/workspace.
  *
  * @param parentPaneId - The pane ID of the parent orchestrator
@@ -56,12 +99,47 @@ export async function spawnSubAgentViaHerdr(
     );
   }
 
+  // Spec-2 / Challenge 8: the runtime must consult canSpawnSubAgent
+  // before issuing the herdr call. parentDepth/parentIsUserTab are
+  // conservatively defaulted to "top-level orchestrator" for the
+  // multiplexing-session entry point; callers that know they are
+  // nested deeper (e.g. a sub-orchestrator spawning an adversarial)
+  // call canSpawnSubAgent directly first and pass an explicit
+  // parentDepth. The conservative default keeps the multiplex path
+  // safe for the top-level orchestrator (depth=0) without the call
+  // site needing to opt in.
+  const guard = canSpawnSubAgent(parentPaneId, agentConfig, {
+    parentDepth: 0,
+    parentIsUserTab: false,
+  });
+  if (!guard.ok) {
+    throw new Error(
+      `canSpawnSubAgent: refused (${guard.reason}) — agent=${agentConfig.name ?? "<unnamed>"}`,
+    );
+  }
+
   const agentName = agentConfig.name ?? `sub-agent-${_subAgentCounter}`;
   const agent = agentConfig.agent ?? "pi";
-  const piArgs = agent === "pi" ? ["pi", "--version"] : ["bash", "--version"];
+  // Long-running shell so spawnSubAgentViaHerdr (used by adversarial +
+  // sub-agent callers) leaves a live process. The prior one-shot
+  // `pi --version` was Challenge 15's target; the spawn-into-tab path
+  // still works for a long-lived `bash` because herdr's `agent start`
+  // exec's the command in the new pane.
+  const piArgs = agent === "pi" ? ["bash", "-lc", "exec pi --system-prompt-file /etc/prompts/sub-orchestrator.md"] : ["bash", "-lc", "exec bash"];
 
-  // Use herdr agent start to spawn a new pane with the sub-agent command
-  const result = await herdrSession.spawnPane(piArgs);
+  // Spec-2 / Challenge 8: tabPlacement is now respected. `"tab"` lands
+  // in a fresh tab via spawnPaneInNewTab; `"pane"` lands in the
+  // parent's tab via spawnPane(cmd, { targetTabId }). Both call sites
+  // reject `targetTabId` labels starting with `user-` (per ADR 0002).
+  const placement = agentConfig.tabPlacement ?? DEFAULT_TAB_PLACEMENT;
+  const result: SpawnPaneResult =
+    placement === "tab"
+      ? await herdrSession.spawnPaneInNewTab(piArgs, {
+          tabLabel: `orch-${agentName}`,
+        })
+      : await herdrSession.spawnPane(piArgs, {
+          targetTabId: agentConfig.parentTabId,
+        });
 
   return {
     paneId: result.paneId,

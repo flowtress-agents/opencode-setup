@@ -118,8 +118,16 @@ const DEFAULT_RETRY_DELAY_MS = 250;
 /**
  * Determine whether a herdr CLI failure is transient (worth retrying) or
  * permanent (propagate immediately). We treat non-zero exit codes that
- * mention "no such", "not found", "denied", or "permission" as permanent;
- * everything else is considered transient.
+ * mention "no such", "not found", "denied", "permission", "refused",
+ * "unknown subcommand", or "invalid argument" as permanent; everything
+ * else is considered transient.
+ *
+ * Stage C fix (Challenge 13): the "refused" keyword is now in the
+ * permanent list so the user-workspace reservation error
+ * (`spawnPane: refused — target tab is reserved (user-*) ...`)
+ * propagates immediately instead of burning `DEFAULT_RETRY_ATTEMPTS`
+ * linear-backoff iterations. The reservation is logically permanent —
+ * retrying the spawn into a `user-*` tab is not going to succeed.
  */
 function isTransientHerdrFailure(stderr: string, exitCode: number): boolean {
   if (exitCode === 0) return false;
@@ -129,6 +137,7 @@ function isTransientHerdrFailure(stderr: string, exitCode: number): boolean {
     lower.includes("not found") ||
     lower.includes("denied") ||
     lower.includes("permission") ||
+    lower.includes("refused") ||
     lower.includes("unknown subcommand") ||
     lower.includes("invalid argument")
   ) {
@@ -351,6 +360,19 @@ export async function spawnOrchestrationTeam(
     if (usedPaneIds.has(handle.paneId)) {
       handle = await spawnSubOrchestrator(session, ws, workspaceId);
     }
+    // Stage C fix (Challenge 5): the sub-orchestrator should be the
+    // lowest-id pane in its tab. The orchestrator (and downstream
+    // consumers like the dispatch envelope) identify the
+    // sub-orchestrator by its pane id; if herdr assigned a non-root
+    // pane id, the "pane 0 = sub-orch" assumption breaks silently.
+    // We surface a YELLOW warning rather than throw because (a) the
+    // spec has been wrong about this for two iterations and we want
+    // observability without blocking the spawn, and (b) some herdr
+    // versions may legitimately allocate the agent pane after the
+    // root pane. The test
+    // `__tests__/live/team-spawner.spec.ts > pane-0 invariant`
+    // pins the warning's presence.
+    assertSubOrchestratorIsLowestPane(session, handle.tabId, handle.paneId, ws.name);
     subOrchestrators.push({
       workstream: ws.name,
       paneId: handle.paneId,
@@ -481,10 +503,35 @@ async function spawnUserTab(
 // ---------------------------------------------------------------------------
 
 /**
+ * Path to the sub-orchestrator system prompt inside the container
+ * (mirrors the convention used by `impl/scripts/start-orchestrator.sh`
+ * for the adversarial prompt at `/etc/prompts/adversarial.md`).
+ * Loaded by `pi --system-prompt-file` at agent-start time. The
+ * corresponding source-of-truth file is
+ * `impl/scripts/prompts/sub-orchestrator.md` (committed next to
+ * `surgical-fixer.md` and `adversarial.md`).
+ */
+const SUB_ORCHESTRATOR_PROMPT_PATH = "/etc/prompts/sub-orchestrator.md";
+
+/**
+ * Path to the surgical-fixer system prompt inside the container.
+ * Source-of-truth file: `impl/scripts/prompts/surgical-fixer.md`.
+ */
+const SURGICAL_FIXER_PROMPT_PATH = "/etc/prompts/surgical-fixer.md";
+
+/**
  * Spawn a single sub-orchestrator in its own tab. The sub-orchestrator
- * is a fresh pane running `pi --version` (the runtime promotes it to a
- * sub-orchestrator on demand). We do not pass `--prompt` here — that
- * is the orchestrator's responsibility, not ours.
+ * is a long-running `pi` process (not a one-shot `pi --version`); the
+ * pane's process tree stays alive so the orchestrator's `send-text`
+ * calls land on a live shell. See `stage-B-challenges.md` Challenge 15
+ * for the prior bug. The sub-orchestrator's `pi` is started with:
+ *
+ *   pi --system-prompt-file /etc/prompts/sub-orchestrator.md
+ *
+ * and `AGENT_CAPABILITY=read` exported in the same exec (so the
+ * runtime command allowlist applies to every command the
+ * sub-orchestrator issues). The system prompt instructs the
+ * sub-orchestrator to delegate writes via `spawnFixer`.
  *
  * Each workstream gets a unique tab (per the plan §2: "one tab per
  * workstream"). spawnPaneInNewTab creates the tab via
@@ -496,14 +543,84 @@ async function spawnSubOrchestrator(
   workstream: WorkstreamSpec,
   workspaceId: string,
 ): Promise<SpawnPaneResult> {
-  // The actual command is `pi --version` (a smoke test). The
-  // orchestrator runtime replaces this with the real sub-orchestrator
-  // prompt when it promotes the pane.
-  const cmd = ["pi", "--version"];
+  const cmd = [
+    "bash",
+    "-lc",
+    `export AGENT_CAPABILITY=read; exec pi --system-prompt-file=${SUB_ORCHESTRATOR_PROMPT_PATH}`,
+  ];
   return session.spawnPaneInNewTab(cmd, {
     tabLabel: workstream.tabLabel,
     workspaceId,
   });
+}
+
+/**
+ * Stage C fix (Challenge 5): assert that the sub-orchestrator's
+ * pane is the lowest-id pane in its tab.
+ *
+ * The spec's invariant is "sub-orch is pane 0 of its tab; sub-agent
+ * panes are siblings of pane 0 with pane ids ≥ 1." If herdr
+ * allocates a non-root pane id to the agent (e.g. the agent-start
+ * path creates a new pane instead of reusing the tab's root), the
+ * invariant breaks silently and downstream code that addresses
+ * the sub-orchestrator by its pane id routes to the wrong pane.
+ *
+ * This function surfaces a YELLOW `liberty-pane-0-invariant`
+ * warning when the sub-orchestrator's pane id is not the lowest
+ * pane id in the tab. It does NOT throw — the warning is
+ * observational, and some herdr versions may legitimately
+ * allocate the agent pane after the root pane. The team's live
+ * tests pin the warning's presence.
+ */
+function assertSubOrchestratorIsLowestPane(
+  session: HerdrSession,
+  tabId: string,
+  subOrchPaneId: string,
+  workstream: string,
+): void {
+  let stdout: string;
+  try {
+    stdout = execSync(
+      `${DOCKER_BIN} exec ${session.getContainerId()} herdr pane list`,
+      { encoding: "utf-8" },
+    );
+  } catch {
+    return; // best-effort; a transient lookup failure is non-fatal
+  }
+  let panes: any[];
+  try {
+    const payload = JSON.parse(stdout.trim());
+    panes = Array.isArray(payload?.result?.panes) ? payload.result.panes : [];
+  } catch {
+    return;
+  }
+  const tabPanes = panes.filter((p) => p?.tab_id === tabId);
+  if (tabPanes.length === 0) return;
+  // Compute the lowest pane id in the tab. Pane ids look like
+  // "<tab-prefix>-1", "<tab-prefix>-2", etc. — split on the last
+  // "-" and parse the trailing number so we don't get fooled by
+  // non-numeric ids.
+  let lowestPaneId: string | null = null;
+  let lowestPaneNum = Number.POSITIVE_INFINITY;
+  for (const p of tabPanes) {
+    if (typeof p?.pane_id !== "string") continue;
+    const m = /-(\d+)$/.exec(p.pane_id);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n < lowestPaneNum) {
+      lowestPaneNum = n;
+      lowestPaneId = p.pane_id;
+    }
+  }
+  if (lowestPaneId !== null && lowestPaneId !== subOrchPaneId) {
+    console.warn(
+      `YELLOW[liberty-pane-0-invariant]: sub-orchestrator pane ${subOrchPaneId} ` +
+        `for workstream "${workstream}" is NOT the lowest-id pane in tab ${tabId} ` +
+        `(lowest is ${lowestPaneId}). The pane-0 invariant may be broken; ` +
+        `verify that downstream consumers use the recorded paneId and not ` +
+        `the bare "pane 0" assumption. (Stage C fix for Challenge 5.)`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,11 +701,20 @@ export async function spawnFixer(
     );
   }
 
-  // Spawn the fixer pane. The fixer process is `pi --version` (smoke
-  // test); the orchestrator runtime replaces this with the real
-  // surgical-fixer prompt when it dispatches a challenge.
+  // Spawn the fixer pane. The fixer is a long-running `pi` process
+  // (not a one-shot `pi --version` — see Challenge 15) loaded with
+  // the surgical-fixer system prompt. The process tree stays alive
+  // so the orchestrator's `send-text` challenge payload lands on a
+  // live shell. `AGENT_CAPABILITY=readwrite` is exported in the same
+  // exec so `isCommandAllowed` short-circuits to true and the
+  // surgical-fixer contract holds.
+  const fixerCmd = [
+    "bash",
+    "-lc",
+    `export AGENT_CAPABILITY=readwrite; exec pi --system-prompt-file=${SURGICAL_FIXER_PROMPT_PATH}`,
+  ];
   const handle = await withRetry(
-    () => session.spawnPane(["pi", "--version"]),
+    () => session.spawnPane(fixerCmd),
     undefined,
     undefined,
     `spawn-fixer:${workstream}`,

@@ -439,6 +439,24 @@ export class HerdrSession {
     const tabLabel = opts.tabLabel ?? `tab-${Date.now()}-${_spawnPaneCounter}`;
     const workspaceId = opts.workspaceId ?? "default";
 
+    // Spec-2 / Stage C fix (Challenge 12): refuse to create a tab
+    // whose label starts with `user-`. This matches the existing
+    // `spawnPane` guard and is the runtime-layer enforcement of
+    // the spec-side reservation that "exactly one user workspace is
+    // allowed" (per `reserveUserWorkspace` in
+    // `test/sandbox/fixtures/sandbox-spec/src/orchestration.ts`).
+    // Without this guard, a sub-agent calling
+    // `spawnPaneInNewTab(cmd, { tabLabel: "user-extra" })` would
+    // succeed and create a second tab in the `user-*` namespace
+    // that subsequent `spawnPane(targetTabId: <that-tab>)` calls
+    // would correctly reject, but the second tab would already
+    // exist. F7 in `orchestration.spec.ts` pins the rejection.
+    if (tabLabel === "user" || tabLabel.startsWith("user-")) {
+      throw new Error(
+        `spawnPaneInNewTab: refused — tab label is reserved (user-*) (tabLabel="${tabLabel}")`,
+      );
+    }
+
     // Step 1: create a new tab in the workspace.
     const tabArgs = [
       "tab",
