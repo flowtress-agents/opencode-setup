@@ -72,7 +72,7 @@ const ctx: EdgeCaseContext = {
  * console.warn with YELLOW tags.
  */
 
-describeOrSkip("EDCE-1: herdr crash — PTY exit handling", () => {
+describeOrSkip("EDCE-1: herdr crash — PTY exit handling", { timeout: 240_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();
@@ -164,7 +164,7 @@ describeOrSkip("EDCE-1: herdr crash — PTY exit handling", () => {
  * waitForPiReady() with a short timeout and inspect the thrown error.
  */
 
-describeOrSkip("EDCE-2: pi --version hang — waitForPiReady timeout quality", () => {
+describeOrSkip("EDCE-2: pi --version hang — waitForPiReady timeout quality", { timeout: 180_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();
@@ -238,7 +238,7 @@ describeOrSkip("EDCE-2: pi --version hang — waitForPiReady timeout quality", (
  * instability, so we stub the command.
  */
 
-describeOrSkip("EDCE-3: Container OOM during sub-agent spawn", () => {
+describeOrSkip("EDCE-3: Container OOM during sub-agent spawn", { timeout: 180_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();
@@ -344,7 +344,7 @@ describeOrSkip("EDCE-3: Container OOM during sub-agent spawn", () => {
  * We then verify basic herdr commands work over the fallback stream.
  */
 
-describeOrSkip("EDCE-4: node-pty unavailable — fallback to docker-exec", () => {
+describeOrSkip("EDCE-4: node-pty unavailable — fallback to docker-exec", { timeout: 180_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();

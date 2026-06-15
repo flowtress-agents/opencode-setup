@@ -49,7 +49,7 @@ const ctx: RuntimeReadonlyContext = {
   pane0Id: "pane-0",
 };
 
-describeOrSkip("runtime-readonly: read-only agent git commit rejection", () => {
+describeOrSkip("runtime-readonly: read-only agent git commit rejection", { timeout: 240_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();

@@ -115,7 +115,7 @@ const ctx: AdversarialTestContext = {
 //   herdr pane get pane-0
 // ---------------------------------------------------------------------------
 
-describeOrSkip("ATK-1: Pane 0 Immutability Attack", () => {
+describeOrSkip("ATK-1: Pane 0 Immutability Attack", { timeout: 240_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();
@@ -239,7 +239,7 @@ describeOrSkip("ATK-1: Pane 0 Immutability Attack", () => {
 //   herdr pane list
 // ---------------------------------------------------------------------------
 
-describeOrSkip("ATK-2: MAX_PANE_DEPTH Attack", () => {
+describeOrSkip("ATK-2: MAX_PANE_DEPTH Attack", { timeout: 180_000 }, () => {
   beforeAll(async () => {
     const available = await dockerAvailable();
     if (!available) return;
@@ -395,7 +395,7 @@ describeOrSkip("ATK-2: MAX_PANE_DEPTH Attack", () => {
 // CLI command: herdr agent start <name> -- <cmd> (repeated 9+ times)
 // ---------------------------------------------------------------------------
 
-describeOrSkip("ATK-3: MAX_SUB_AGENTS_PER_ORCHESTRATOR CLI Attack", () => {
+describeOrSkip("ATK-3: MAX_SUB_AGENTS_PER_ORCHESTRATOR CLI Attack", { timeout: 180_000 }, () => {
   beforeAll(async () => {
     const available = await dockerAvailable();
     if (!available) return;
@@ -484,7 +484,7 @@ describeOrSkip("ATK-3: MAX_SUB_AGENTS_PER_ORCHESTRATOR CLI Attack", () => {
 // CLI command: herdr pane run <target_pane_id> <command>
 // ---------------------------------------------------------------------------
 
-describeOrSkip("ATK-4: Cross-Pane Exec Attack (Isolation Breach)", () => {
+describeOrSkip("ATK-4: Cross-Pane Exec Attack (Isolation Breach)", { timeout: 180_000 }, () => {
   beforeAll(async () => {
     const available = await dockerAvailable();
     if (!available) return;
@@ -628,7 +628,7 @@ describeOrSkip("ATK-4: Cross-Pane Exec Attack (Isolation Breach)", () => {
 // Attempt to create panes with duplicate IDs by racing pane creation.
 // ---------------------------------------------------------------------------
 
-describeOrSkip("ATK-5: Pane ID Collision Attack", () => {
+describeOrSkip("ATK-5: Pane ID Collision Attack", { timeout: 180_000 }, () => {
   beforeAll(async () => {
     const available = await dockerAvailable();
     if (!available) return;

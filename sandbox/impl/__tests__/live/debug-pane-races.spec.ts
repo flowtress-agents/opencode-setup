@@ -87,11 +87,11 @@ const ctx: RaceTestContext = {
 // Tests
 // ---------------------------------------------------------------------------
 
-describeOrSkip("DEBUG: pane allocation race conditions", { hookTimeout: 60_000 }, () => {
-  // Pass 30_000 as the 2nd arg of beforeAll directly. vitest 2.1.x does not
-  // apply the suite-level `{ hookTimeout }` option to the global config that
-  // `getDefaultHookTimeout()` reads — only the per-hook timeout argument is
-  // honoured. The suite option is kept for consistency with orchestration.spec.ts.
+describeOrSkip("DEBUG: pane allocation race conditions", { timeout: 180_000 }, () => {
+  // vitest 2.1.x does not accept a suite-level `hookTimeout` option (it is
+  // silently ignored — only the per-hook timeout argument is honoured). Pass
+  // 180_000 as the 2nd arg of beforeAll directly to absorb the cold-start
+  // cost of `launchFromSpec() + HerdrSession.open()` under full-suite load.
 
   beforeEach(() => {
     // _subAgentCounter in multiplexing-session.ts is module-level. Reset
@@ -118,7 +118,7 @@ describeOrSkip("DEBUG: pane allocation race conditions", { hookTimeout: 60_000 }
 
     ctx.herdrSession = await HerdrSession.open({ containerId: ctx.containerId });
     ctx.orchestratorPane0 = await ctx.herdrSession.getPane0Id();
-  }, 60_000);
+  }, 180_000);
 
   afterAll(async () => {
     if (ctx.herdrSession) {

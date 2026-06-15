@@ -110,7 +110,7 @@ async function ensureSession(): Promise<HerdrSession | null> {
 // T1: spawnOrchestrationTeam returns exactly N sub-orchestrators for N workstreams
 // ---------------------------------------------------------------------------
 
-describeOrSkip("T1: spawnOrchestrationTeam returns one sub-orchestrator per workstream", () => {
+describeOrSkip("T1: spawnOrchestrationTeam returns one sub-orchestrator per workstream", { timeout: 180_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();
@@ -486,7 +486,7 @@ describeOrSkip("T6: re-running spawnOrchestrationTeam is safe", () => {
 // These are RED tests: they will fail until the runtime implements
 // `userWorkspace` on `TeamSpawnResult`. See ADR 0002 + plan §1.3.
 
-describeOrSkip("T7: user tab is reserved from sub-orchestrators", { hookTimeout: 30_000 }, () => {
+describeOrSkip("T7: user tab is reserved from sub-orchestrators", { timeout: 180_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();

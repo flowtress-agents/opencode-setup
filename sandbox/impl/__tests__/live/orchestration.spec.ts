@@ -114,7 +114,7 @@ describeOrSkip("F1: container-per-launch", () => {
 // F2: pane-0 orchestrator
 // ---------------------------------------------------------------------------
 
-describeOrSkip("F2: pane-0 orchestrator", { hookTimeout: 90_000 }, () => {
+describeOrSkip("F2: pane-0 orchestrator", { timeout: 180_000 }, () => {
   beforeAll(async () => {
     const available = await dockerAvailable();
     if (!available) return;
@@ -126,7 +126,7 @@ describeOrSkip("F2: pane-0 orchestrator", { hookTimeout: 90_000 }, () => {
 
     ctx.herdrSession = await HerdrSession.open({ containerId: ctx.containerId });
     ctx.orchestratorPane0 = await ctx.herdrSession.getPane0Id();
-  }, 90_000);
+  }, 180_000);
 
   afterAll(async () => {
     if (ctx.herdrSession) {

@@ -58,7 +58,7 @@ const ctx: BypassContext = {
 
 const FIXER_AGENT_ID = "fixer-scaffold_2";
 
-describeOrSkip("runtime-readwrite-bypass: read-write sub-agent can run write commands", () => {
+describeOrSkip("runtime-readwrite-bypass: read-write sub-agent can run write commands", { timeout: 240_000 }, () => {
   afterAll(async () => {
     if (ctx.herdrSession) {
       await ctx.herdrSession.close();

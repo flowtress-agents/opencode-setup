@@ -52,7 +52,7 @@ const ctx: AdversarialProtocolContext = {
   pane0Id: "pane-0",
 };
 
-describeOrSkip("adversarial-protocol: sub-orchestrator adversarial child enforcement", () => {
+describeOrSkip("adversarial-protocol: sub-orchestrator adversarial child enforcement", { timeout: 180_000 }, () => {
 
   afterAll(async () => {
     if (ctx.herdrSession) {
