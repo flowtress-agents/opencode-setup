@@ -216,6 +216,36 @@ The opensrc citations are usable but the spec could be more precise (Challenge 9
 | 14 | missing_evidence | block | CONTEXT.md §8 / spec §6.4 | 870–884 / 296–386 |
 | 15 | missing_evidence | block | team-spawner.ts | 494–507 / 553–601 |
 
+---
+
+## Stage C Resolutions (2026-06-15)
+
+The surgical fixer team (Stage C of the loop) addressed the
+challenges above. The table below records the outcome of each
+challenge — fixed, deferred, or already-resolved-by-prior-commit.
+
+| # | Severity | Resolution | Where |
+|---|----------|------------|-------|
+| 1 | block | **Fixed.** ADR 0003 Q3 rewritten to acknowledge same-daemon teardown; new `tearDownTree()` lifecycle phase documented. Spec §5.8 + CONTEXT.md §6.3 also updated. | `docs/adr/0003-orchestrator-lifecycle.md`, `docs/spec/sections/05-orchestrator-user-workspace.md:5.8`, `sandbox/CONTEXT.md:6.3` |
+| 2 | block | **Fixed.** Picked the bash-REPL-via-`herdr pane read` model (ADR 0003 Q4). TUI keybind and CLI alternatives deleted from spec §5.6 and CONTEXT.md §6.1 / §6.2. | `docs/spec/sections/05-orchestrator-user-workspace.md:5.6`, `sandbox/CONTEXT.md:6.1` step 2, `sandbox/CONTEXT.md:6.2` edge case |
+| 3 | block | **Fixed.** Spec §5.4 + CONTEXT.md §5.4 + ADR 0002 now document the **opt-in** nature of the `spawnPane` guard (only fires when `targetTabId` is set; callers without it must route via `spawnPaneInNewTab`). | `docs/spec/sections/05-orchestrator-user-workspace.md:5.4`, `sandbox/CONTEXT.md:5.4`, `docs/adr/0002-user-workspace.md` |
+| 4 | warn | **Fixed.** ADR 0005 + spec §6.3.3 now explicitly state the audit log is **universal** (fires for `read` and `readwrite` alike) and the readwrite bypass is at the **command execution** layer only. The audit log is an audit, not a gate. | `docs/adr/0005-readwrite-sub-agents.md`, `docs/spec/sections/06-sub-orchestrator-sub-agent.md:6.3.3` |
+| 5 | block | **Fixed.** Pane-0 invariant now enforced at runtime via YELLOW `liberty-pane-0-invariant` warning in `team-spawner.ts:assertSubOrchestratorIsLowestPane()`. The function queries `herdr pane list`, finds the lowest-id pane in the sub-orchestrator's tab, and warns if the sub-orchestrator's pane is not the lowest. | `test/sandbox/impl/orchestration/team-spawner.ts:assertSubOrchestratorIsLowestPane` |
+| 6 | block | **Fixed.** ADR 0003 Q1 renamed from "Fan-out, non-blocking" to "Sequential spawn, parallel execute" to match the actual runtime (sequential `for` loop + parallel sub-orch panes). The new framing cites the runtime line range and the spec's own §5.7 hedge. | `docs/adr/0003-orchestrator-lifecycle.md` Q1 |
+| 7 | warn | **Fixed.** CONTEXT.md §6.3 now documents the explicit detection contract: a sub-orchestrator pane is "dead" when its `herdr pane get <pane>` call returns a state other than `idle`/`working`/`running`, or when the pane id no longer appears in `herdr pane list`. | `sandbox/CONTEXT.md:6.3` |
+| 8 | block | **Fixed.** New `canSpawnSubAgent(parentTabId, agentConfig, opts)` pure function in `multiplexing-session.ts`; `spawnSubAgentViaHerdr` now consults it and respects `tabPlacement` ("tab" → `spawnPaneInNewTab`, "pane" → `spawnPane(cmd, { targetTabId })`). New unit test `can-spawn-sub-agent.spec.ts` pins the contract. | `test/sandbox/impl/orchestration/multiplexing-session.ts`, `test/sandbox/impl/__tests__/live/can-spawn-sub-agent.spec.ts`, both `multiplexing.ts` fixtures |
+| 9 | warn | **Fixed.** CONTEXT.md §2.4 now cites the specific opencode functions: `Effect` type at `repos/opencode/packages/core/src/permission/schema.ts:5-13` (3 states), `evaluate` at `permission.ts:102-112` (ruleset + wildcard + `"ask"` fallback at line 109), and acknowledges the spec-2 model is a deliberate 2-state simplification. | `sandbox/CONTEXT.md:2.4` |
+| 10 | block | **Fixed.** New live test `runtime-readwrite-bypass.spec.ts` asserts: (a) a readwrite sub-agent's `git commit` exits 0, (b) the command is recorded in `/tmp/agent-<id>.audit` with `capability=readwrite`. Companion to the existing `runtime-readonly.spec.ts` (which tests the rejection half). | `test/sandbox/impl/__tests__/live/runtime-readwrite-bypass.spec.ts` |
+| 11 | block | **Fixed.** New ADR 0008 `docs/adr/0008-spec3-os-uid-timeline.md` pins the spec-3 scope (per-tier UIDs, FS ACLs, seccomp, per-tier herdr) and a delivery timeline (kickoff 2026-07-01, ship 2026-08-19) with a rollback plan (YELLOW warning at runtime if the timeline slips by >2 weeks). | `docs/adr/0008-spec3-os-uid-timeline.md` + test-worktree mirror `impl/docs/ADR-0008-spec3-os-uid-timeline.md` |
+| 12 | warn | **Fixed.** `spawnPaneInNewTab` now refuses any `tabLabel` starting with `user-` (matching the existing `spawnPane` guard). Without this, a sub-agent could create a second `user-*` tab that the spec validator at `reserveUserWorkspace` would reject but the runtime would have already created. | `test/sandbox/impl/pty/herdr-session.ts:spawnPaneInNewTab` |
+| 13 | warn | **Fixed.** `isTransientHerdrFailure` in `team-spawner.ts` now treats the "refused" keyword as permanent. The user-workspace reservation error (`spawnPane: refused — target tab is reserved (user-*) ...`) propagates immediately instead of burning 3 retry iterations. | `test/sandbox/impl/orchestration/team-spawner.ts:isTransientHerdrFailure` |
+| 14 | block | **Already resolved by prior commits.** The `stage-B-challenges.md` doc was written when the worktree was at `32954e5`, but commits `b064149` ("give F7 hooks 30s timeout") and `fd0a8ab` ("red tests for user-workspace reservation") added F7 in `orchestration.spec.ts:452` and T7 in `team-spawner.spec.ts:489` between then and the Stage C fix. F7 pins `spawnPane refuses a target tab whose label starts with user-`; T7 pins 4 sub-cases including `userWorkspace is registered first in the spawn result`, `user tab is in the same workspace as the orchestrator`, and `all 5 of {orchestrator, user, scaffold_2, git-worktree, deps} tabs are present`. The challenges doc was stale; this is recorded here so a future reader of `stage-B-challenges.md` is not confused by the "tests do not exist" claim. | n/a (stale challenge) |
+| 15 | block | **Fixed.** `team-spawner.ts:spawnSubOrchestrator` and `spawnFixer` no longer use the one-shot `pi --version` command. Both now spawn long-running `pi` processes via `bash -lc "export AGENT_CAPABILITY=…; exec pi --system-prompt-file=/etc/prompts/<name>.md"`. New `sub-orchestrator.md` prompt file at `impl/scripts/prompts/sub-orchestrator.md` (mirroring the existing `surgical-fixer.md` and `adversarial.md` convention). | `test/sandbox/impl/orchestration/team-spawner.ts`, `test/sandbox/impl/scripts/prompts/sub-orchestrator.md` |
+
+**Deferred items.** No challenges are deferred to spec-3; all 15
+are either fixed (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15)
+or were stale (14).
+
 **Top 3 most consequential challenges (highest blast radius):**
 1. **Challenge 15** (`pi --version` is one-shot) — the entire spec's "long-running sub-orchestrator / sub-agent / fixer" model is broken at the runtime level. Nothing in spec-2 works without fixing this first.
 2. **Challenge 8** (`canSpawnSubAgent` does not exist) — the depth-4 nesting rule has no runtime enforcement. A sub-agent with `tabPlacement: "tab"` inside a sub-orchestrator's tab silently succeeds today.

@@ -77,6 +77,12 @@ function nextTabId(): string {
  * recorded. The runtime hooks this up to herdr's multiplexing API; this
  * stub returns a deterministic handle that satisfies the spec contract.
  *
+ * Spec-2 / Challenge 8 fix: `tabPlacement` is now respected. A request
+ * with `tabPlacement: "tab"` allocates a fresh tab id; a request with
+ * `tabPlacement: "pane"` (the default) reuses the parent's `parentTabId`
+ * (or allocates a fresh tab if `parentTabId` is absent, matching the
+ * prior behavior for callers that omit both fields).
+ *
  * @param parentPaneId - The pane ID of the parent orchestrator
  * @param agentConfig - The sub-agent's configuration (name, optional agent type)
  * @returns A SubAgentHandle with the new pane/tab IDs and parent linkage
@@ -91,7 +97,14 @@ export function spawnSubAgent(
   if (!agentConfig || typeof agentConfig.name !== "string" || agentConfig.name.length === 0) {
     throw new Error("spawnSubAgent: agentConfig.name must be a non-empty string");
   }
-  const tabId = agentConfig.parentTabId ?? nextTabId();
+  const placement = agentConfig.tabPlacement ?? DEFAULT_TAB_PLACEMENT;
+  // For "pane" placement, prefer the parent's tab so the new pane
+  // shares a tab with the caller (siblings inside one tab). For "tab"
+  // placement, always allocate a fresh tab id.
+  const tabId =
+    placement === "pane" && agentConfig.parentTabId
+      ? agentConfig.parentTabId
+      : nextTabId();
   return {
     paneId: nextPaneId(),
     tabId,

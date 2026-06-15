@@ -221,7 +221,18 @@ the spec needs:
   `impl/pty/herdr-session.ts:auditLog`) records every command with
   the resolved capability. A readwrite sub-agent's commands are
   visible in the log; an orchestrator or auditor can replay them
-  post-hoc.
+  post-hoc. **Stage C fix (Challenge 4):** the audit log is
+  universal — it fires for `read` and `readwrite` alike. The
+  readwrite bypass applies to whether `isCommandAllowed` consults
+  `READ_ONLY_COMMAND_RE` (it does not for readwrite), not to
+  whether the command is recorded. The two layers are
+  deliberately independent: the audit log is an audit, not a
+  gate. A rejected `read`-capability command does **not** appear
+  in the log (the gate fires before the audit); a successful
+  readwrite command **does** appear with `capability=readwrite`.
+  This is intentional. Without it, the spec-2 answer to "what did
+  the write-priv sub-agent do while the runtime was looking the
+  other way?" would be "nothing observable."
 - **The adversarial swarm** challenges the workstream's output. A
   readwrite sub-agent that deletes a critical file by mistake is
   flagged by the adversarial with `severity: "block"`, and the

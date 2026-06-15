@@ -196,7 +196,22 @@ the *runtime* decides whether the action is allowed. The orchestrator's
 system prompt lists the available sub-orchestrator templates, the
 adversarial protocol, and the spawn_fixer lookup — but does not prescribe
 *when* to use them. This matches opencode's `Effect = "allow" | "deny" |
-"ask"` model in `repos/opencode/packages/core/src/permission/schema.ts`.
+"ask"` model in `repos/opencode/packages/core/src/permission/schema.ts:5-13`.
+
+> **Stage C fix (Challenge 9) — opencode is a 3-state model with a
+> ruleset, not a 2-state capability.** The `Effect` type at
+> `repos/opencode/packages/core/src/permission/schema.ts:5-13` is
+> `Effect = "allow" | "deny" | "ask"` and is evaluated by the
+> `evaluate` function at `repos/opencode/packages/core/src/permission.ts:102-112`
+> against a `Ruleset` (multiple rules with wildcards). When no rule
+> matches, opencode falls back to `"ask"` (line 109), prompting the
+> user. The spec-2 model is a deliberate **2-state simplification**:
+> `Capability = "read" | "readwrite"`. We dropped the `"ask"` state
+> because the spec-2 orchestrator is fully autonomous (it cannot ask
+> a human in the middle of a dispatch) and dropped the ruleset
+> because the spec-2 model is per-pane, not per-tool. The
+> simplification is documented as such; the `Effect` type is
+> cited so future readers can see what we simplified away.
 
 ### 2.5 Dedicated user workspace + user tab; runtime reservation only
 
@@ -436,7 +451,24 @@ guard fires when:
 The guard does **not** fire for `tabLabel = "orch-scaffold_2"` or any
 other non-user label. It is the only mechanical guarantee that a
 sub-agent calling `spawnPane` cannot land in the user tab from inside
-the runtime hook layer.
+the runtime hook layer — but only when `targetTabId` is set.
+
+> **Stage C fix (Challenge 3) — opt-in semantics:** the guard is
+> **opt-in via `targetTabId`**. If a caller invokes
+> `spawnPane(cmd)` with no `targetTabId`, the guard is silently
+> bypassed: the call goes through herdr's default tab, and herdr's
+> default may be the user tab on some versions. The orchestrator
+> itself never uses that overload — every spawn it issues either
+> passes `targetTabId` (when targeting a specific tab) or goes
+> through `spawnPaneInNewTab` (which creates a fresh tab and does
+> not reuse the user tab). The "mechanical guarantee against
+> landing in the user tab" therefore only holds for callers that
+> pass `targetTabId` explicitly. Callers that omit `targetTabId`
+> are responsible for routing via `spawnPaneInNewTab` or for
+> ensuring the daemon's default tab is not `user-*`. F7 in
+> `orchestration.spec.ts` is the test that documents the
+> opt-in shape: the guard fires with `targetTabId` and does
+> **not** fire without it.
 
 **Limitation:** a misbehaving sub-agent that calls
 `docker exec herdr ...` directly (bypassing the runtime's `spawnPane`)
@@ -490,17 +522,16 @@ Step by step:
 1. **User types in the user tab.** The bash REPL in the user tab
    receives the line. No orchestrator is involved at this point —
    the user is just talking to bash.
-2. **User pipes the prompt to the orchestrator.** Spec-2 does not
-   define a magic binding between the user tab and the orchestrator
-   pane; the user signals "this is for the orchestrator" by some
-   out-of-band mechanism (a keybind in the TUI, a CLI tool, or just
-   by also typing into the orchestrator tab directly). Concretely,
-   the harness in the live tests calls
-   `herdr pane send-text <orchestrator-pane> <prompt>` from outside
-   the container; the user can do the same by hand.
-3. **Orchestrator is in state `idle`.** It reads the prompt via
-   `herdr pane read` of its own pane (or via the send-text channel).
-   It transitions to `busy`.
+2. **Orchestrator observes the user tab via `herdr pane read`.** The
+   chosen input channel (ADR 0003 Q4; see also
+   `docs/spec/sections/05-orchestrator-user-workspace.md:5.6` and the
+   Stage C fix for Challenge 2) is the bash REPL: the orchestrator's
+   polling loop reads the user tab's pane via
+   `herdr pane read <user-pane>` to learn what the user typed. The
+   user does not need any TUI keybind or external CLI to drive the
+   orchestrator.
+3. **Orchestrator is in state `idle`.** It reads the user's prompt
+   via `herdr pane read <user-pane>` and transitions to `busy`.
 4. **Orchestrator plans three workstreams.** It emits a plan:
    `scaffold_2`, `git-worktree`, `deps`. These are the canonical
    workstreams the runtime pre-registers in `/etc/surgical-fixers`.
@@ -559,11 +590,13 @@ or a control channel. The orchestrator could in principle read the
 user tab's output via `herdr pane read <user-pane>`, but it has no
 reason to do so for an arbitrary bash command.
 
-**Edge case:** if the user types something the orchestrator is
-supposed to react to, the user must send the prompt to the
-orchestrator's pane directly (via the TUI keybind or a CLI tool).
-The user tab is not a magic input channel into the orchestrator;
-it is a regular bash REPL the user owns.
+**Edge case:** the user tab is not a magic input channel into the
+orchestrator. It is a regular bash REPL the user owns, and the
+orchestrator learns what the user typed only by polling
+`herdr pane read <user-pane>`. There is no TUI keybind or external
+CLI in the spec-2 contract — the bash REPL is the only input
+channel, and the orchestrator is the only thing that reads it.
+ADR 0003 Q4 pins this.
 
 ### 6.3 Sub-orchestrator pane crashes
 
@@ -575,7 +608,14 @@ it is a regular bash REPL the user owns.
 gone (or in `state = dead`) on the next `herdr pane list` or
 `herdr pane get pane-X` call. This is the same polling cadence the
 orchestrator uses to read challenges; the failure mode is the same
-as a pane that emits an empty buffer.
+as a pane that emits an empty buffer. **Stage C fix (Challenge 7)**
+— the detection contract is explicit: a sub-orchestrator pane is
+considered "dead" when its `herdr pane get <pane>` call returns a
+state other than `idle`/`working`/`running` (the three "alive"
+states pinned by `waitForPane` in `impl/pty/herdr-session.ts:507-520`),
+or when the pane id no longer appears in `herdr pane list`. The
+polling cadence is the same as the challenge-log polling. No
+separate watcher is needed.
 
 **Recovery (spec-2 choice):** The orchestrator does **not**
 auto-respawn the crashed sub-orchestrator. The sub-orchestrator's
@@ -585,6 +625,20 @@ surgical fixer or re-plan the workstream. Auto-respawn is explicitly
 out of scope for spec-2: it requires a state-mirroring mechanism
 (sub-orchestrator's plan needs to be replayable) that is not
 specified here. ADR 0003 records this.
+
+**Distinguish from "orchestrator dies" (Stage C fix for Challenge 1):**
+the spec keeps these two failure modes separate. A crashed
+sub-orchestrator pane is one process within the herdr daemon; the
+daemon stays up, the orchestrator stays up, and the rest of the team
+keeps working. The orchestrator simply marks that workstream as
+failed and moves on. A crashed *orchestrator* pane, by contrast,
+takes the orchestrator's polling loop with it; sub-orchestrators
+keep running but the work is no longer coordinated. See
+`docs/spec/sections/05-orchestrator-user-workspace.md:5.8` and
+`docs/adr/0003-orchestrator-lifecycle.md` (Q3, rewritten in
+Stage C) for the full lifecycle story, including the new
+`tearDownTree()` phase that brings the sub-tree down without
+killing the daemon.
 
 **Why not auto-respawn:** A crashed sub-orchestrator is a partial
 state — the work it did may be on disk, may not, and re-spawning
