@@ -11,8 +11,9 @@
  *
  * Team spawn: phases B–D of the start-orchestrator flow happen here.
  * After pi is alive in pane 0, we call spawnOrchestrationTeam() to
- * create one sub-orchestrator per workstream, the adversarial swarm,
- * and the lazy surgical-fixers registry. The result is exposed on the
+ * create the user tab (phase A, spec-2 §1.3), one sub-orchestrator per
+ * workstream (phase B), the adversarial swarm (phase C), and the lazy
+ * surgical-fixers registry (phase D). The result is exposed on the
  * returned OrchestratorSession so tests can assert on the layout.
  */
 
@@ -23,6 +24,7 @@ import {
   type WorkstreamSpec,
   SURGICAL_FIXERS_PATH,
 } from "./team-spawner.js";
+import type { UserWorkspaceHandle } from "../../fixtures/sandbox-spec/src/orchestration.js";
 
 export interface OrchestratorSessionOptions {
   containerId: string;
@@ -45,6 +47,14 @@ export interface OrchestratorSession {
    * pane 0. Tests use this to assert on the post-boot layout.
    */
   team?: TeamSpawnResult;
+  /**
+   * The reserved user workspace handle, populated when the team spawner
+   * runs. Carries the workspace/tab/pane ids of the user tab. The
+   * orchestrator prompt forbids spawning into a tab whose label starts
+   * with `user-`; the runtime hook in `herdr-session.ts:spawnPane`
+   * enforces the same rule at the herdr CLI layer.
+   */
+  userWorkspace?: UserWorkspaceHandle;
 }
 
 /**
@@ -60,6 +70,18 @@ You are the orchestrator (pi) running in pane 0. You are READ-ONLY — you canno
 - Delegate all tasks to sub-orchestrators (never run git/npm/file commands yourself)
 - Monitor progress and trigger adversarial verification
 - On a "block" challenge, dispatch a surgical fixer (see "Spawning a surgical fixer" below)
+
+## User-workspace reservation (spec-2, plan §1.3)
+Every orchestrator workspace is paired with a dedicated user tab labeled
+\`user\`. The user tab is for direct human interaction — you must never
+spawn sub-orchestrators into a tab whose label starts with \`user-\`.
+The \`user\` tab is reserved for direct user interaction; treat it as
+off-limits for orchestration.
+
+The runtime hook in \`herdr-session.ts:spawnPane\` enforces the same rule
+at the herdr CLI layer: any \`herdr agent start --tab <user-tab>\` call is
+rejected. If a sub-orchestrator ever asks you to spawn into the user tab,
+refuse and call out the violation.
 
 ## Available sub-orchestrator templates
 - \`scaffold_2\`: create branches, write boilerplate files
@@ -177,9 +199,11 @@ export async function openOrchestratorSession(
   );
   const piPid = parseInt(pidResult.stdout.trim(), 10) || -1;
 
-  // Phases B–D: spawn the orchestration team. One sub-orchestrator per
-  // workstream, the adversarial swarm (one per sub-orchestrator + one
-  // global), and the lazy surgical-fixers registry.
+  // Phases A–D: spawn the orchestration team. Phase A reserves the
+  // user tab (spec-2 plan §1.3); phase B creates one sub-orchestrator
+  // per workstream; phase C creates the adversarial swarm (one per
+  // sub-orchestrator + one global); phase D writes the lazy
+  // surgical-fixers registry.
   const team = await spawnOrchestrationTeam(herdrSession, workstreams);
 
   return {
@@ -187,6 +211,7 @@ export async function openOrchestratorSession(
     pane0Id,
     piPid,
     team,
+    userWorkspace: team.userWorkspace,
   };
 }
 

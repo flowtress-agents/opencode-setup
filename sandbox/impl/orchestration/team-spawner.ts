@@ -28,7 +28,8 @@
  */
 
 import { execSync } from "node:child_process";
-import { HerdrSession, type SpawnPaneResult, parseWorkspaceId } from "../pty/herdr-session.js";
+import { HerdrSession, type SpawnPaneResult, parseWorkspaceId, parseTabId, parseRootPaneId } from "../pty/herdr-session.js";
+import { USER_WORKSPACE_LABEL, type UserWorkspaceHandle } from "../../fixtures/sandbox-spec/src/orchestration.js";
 
 const DOCKER_BIN = (() => {
   try {
@@ -59,6 +60,16 @@ export interface TeamSpawnResult {
   orchestratorPaneId: string;
   /** The workspace id of the orchestrator's workspace. */
   workspaceId: string;
+  /**
+   * The reserved user workspace, paired with the orchestrator's
+   * workspace. Phase 1.3 (spec-2 plan §1.3): every orchestrator
+   * workspace is paired with exactly one `user` tab in the same
+   * workspace, running `bash`. The runtime hook in
+   * `impl/pty/herdr-session.ts:spawnPane` refuses any spawn whose
+   * target tab label starts with `user-`, so a sub-orchestrator that
+   * tries to land here is rejected at the runtime layer. See ADR 0002.
+   */
+  userWorkspace: UserWorkspaceHandle;
   /** One entry per workstream: its sub-orchestrator pane + tab. */
   subOrchestrators: Array<{ workstream: string; paneId: string; tabId: string }>;
   /** Adversarial swarm: one per sub-orchestrator + one global. */
@@ -311,6 +322,18 @@ export async function spawnOrchestrationTeam(
   const orchestratorPaneId = await session.getPane0Id();
   const workspaceId = await resolveOrchestratorWorkspaceId(session, orchestratorPaneId);
 
+  // Phase A (spec-2, plan §1.3): reserve the user tab. This must run
+  // FIRST so the runtime hook in herdr-session.spawnPane can recognize
+  // the user tab id when subsequent sub-orchestrator spawns come in.
+  // The user tab lives in the same workspace as the orchestrator, with
+  // label "user" and a single bash root pane. See ADR 0002.
+  const userWorkspace = await withRetry(
+    () => spawnUserTab(session, workspaceId),
+    undefined,
+    undefined,
+    "spawn-user-tab",
+  );
+
   // Phase B: one sub-orchestrator per workstream.
   const subOrchestrators: Array<{ workstream: string; paneId: string; tabId: string }> = [];
   for (const ws of workstreams) {
@@ -370,9 +393,86 @@ export async function spawnOrchestrationTeam(
   return {
     orchestratorPaneId,
     workspaceId,
+    userWorkspace,
     subOrchestrators,
     adversarialSwarm,
     surgicalFixers,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Internal: phase A — user-workspace reservation
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn the reserved user tab in the orchestrator's workspace. The user
+ * tab runs `bash` and is labeled `user` so the runtime hook in
+ * `herdr-session.ts:spawnPane` can recognize it and refuse to spawn any
+ * other pane into it.
+ *
+ * The plan calls for:
+ *   `herdr tab create --workspace <ws> --cwd /home/agent/user-workspace --label "user" --no-focus`
+ *
+ * Unlike sub-orchestrators (which need a separate `herdr agent start
+ * --tab <tabId>` to spin up a `pi` process in the new tab), the user
+ * tab only needs `herdr tab create` — herdr auto-creates a bash root
+ * pane in the new tab, and that bash pane is what the user drives.
+ * Adding a second `agent start` would create a second pane in the
+ * user tab, which violates the "one bash pane per user tab" invariant
+ * the spec test (`/-1$/` paneId match) expects.
+ *
+ * We use the lower-level `herdr tab create` directly (via the session's
+ * `herdrCmd` plumbing) rather than `spawnPaneInNewTab` so the result
+ * is the root pane, not an extra agent pane.
+ */
+async function spawnUserTab(
+  session: HerdrSession,
+  workspaceId: string,
+): Promise<UserWorkspaceHandle> {
+  const containerId = session.getContainerId();
+  const tabResult = execSync(
+    `${DOCKER_BIN} exec ${containerId} herdr tab create --workspace ${workspaceId} --cwd /home/agent/user-workspace --label ${USER_WORKSPACE_LABEL} --no-focus`,
+    { encoding: "utf-8" },
+  );
+  const tabId = parseTabId(tabResult) ?? "tab-unknown";
+  // The herdr tab create response includes `root_pane.pane_id`. We
+  // re-query the pane list to confirm the id and use the live pane
+  // of the user tab. herdr reorders its pane counter globally
+  // (workspace-wide), so the pane id in the response is the
+  // authoritative one — the pane list filter is a defensive
+  // cross-check.
+  let rootPaneId = "pane-unknown";
+  try {
+    const payload = JSON.parse(tabResult.trim());
+    const root = payload?.result?.root_pane;
+    if (typeof root?.pane_id === "string") {
+      rootPaneId = root.pane_id;
+    }
+  } catch {
+    // fall through
+  }
+  // Re-query the pane list to get the live root pane id of the user tab.
+  try {
+    const listResult = execSync(
+      `${DOCKER_BIN} exec ${containerId} herdr pane list`,
+      { encoding: "utf-8" },
+    );
+    const listPayload = JSON.parse(listResult.trim());
+    const panes = listPayload?.result?.panes;
+    if (Array.isArray(panes)) {
+      const userTabPanes = panes.filter((p: any) => p?.tab_id === tabId);
+      if (userTabPanes.length === 1 && typeof userTabPanes[0]?.pane_id === "string") {
+        rootPaneId = userTabPanes[0].pane_id;
+      }
+    }
+  } catch {
+    // fall through to the parsed id from tab create
+  }
+  return {
+    workspaceId,
+    tabId,
+    paneId: rootPaneId,
+    label: "user",
   };
 }
 

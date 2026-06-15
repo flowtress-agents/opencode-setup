@@ -320,21 +320,60 @@ export class HerdrSession {
    * Uses `herdr agent start` to create a new pane running the command.
    *
    * @param cmd - The command and arguments to run in the new pane
+   * @param opts.targetTabId - Optional herdr tab id to spawn into. When
+   *   set, the agent lands in that specific tab (forwarded as `--tab`
+   *   to `herdr agent start`).
+   *
+   *   Spec-2 (plan §1.3): if the target tab's label starts with
+   *   `user-`, the call is refused with a clear error. This is the
+   *   runtime hook that backs the "no herdr fork" guarantee — a
+   *   sub-orchestrator that tries to land in the user tab is
+   *   rejected before the CLI ever runs. Sub-orchestrators that
+   *   spawn into their own tabs (the common case) are unaffected;
+   *   the guard only fires when `targetTabId` is provided AND the
+   *   resolved tab label starts with `user-`.
+   *
+   *   Note: the guard reads the *label* of the target tab, not the
+   *   id. herdr tab ids and labels are not always the same string;
+   *   the label is the human-readable name and is what the orchestrator
+   *   uses to recognize the user tab (per `launch-sandbox.toml`).
+   *
    * @returns SpawnPaneResult with paneId and tabId
    */
-  async spawnPane(cmd: string[]): Promise<SpawnPaneResult> {
+  async spawnPane(
+    cmd: string[],
+    opts: { targetTabId?: string } = {},
+  ): Promise<SpawnPaneResult> {
+    // Spec-2 user-workspace reservation: refuse to spawn into a
+    // user-* tab. The label-based check is the runtime-layer
+    // enforcement of the spec-side reservation; see ADR 0002.
+    //
+    // The check matches both the exact `"user"` label (per the spec's
+    // reserved user tab) AND any `user-*` prefix (so additional
+    // reserved tabs the orchestrator may add later are also guarded).
+    if (typeof opts.targetTabId === "string" && opts.targetTabId.length > 0) {
+      const tabLabel = readTabLabel(this.containerId, opts.targetTabId);
+      if (tabLabel !== null && (tabLabel === "user" || tabLabel.startsWith("user-"))) {
+        throw new Error(
+          `spawnPane: refused — target tab is reserved (user-*) (tabId="${opts.targetTabId}", label="${tabLabel}")`,
+        );
+      }
+    }
+
     _spawnPaneCounter += 1;
     const name = `agent-${Date.now()}-${_spawnPaneCounter}`;
-    const args = [
+    const args: string[] = [
       "agent",
       "start",
       name,
       "--cwd",
       "/home/agent/workspace",
       "--no-focus",
-      "--",
-      ...cmd,
     ];
+    if (typeof opts.targetTabId === "string" && opts.targetTabId.length > 0) {
+      args.push("--tab", opts.targetTabId);
+    }
+    args.push("--", ...cmd);
 
     const result = herdrCmd(args, this.containerId);
     if (result.exitCode !== 0) {
@@ -655,6 +694,40 @@ function parseRootPaneId(raw: string): string | null {
     const payload = JSON.parse(trimmed);
     const root = payload?.result?.root_pane;
     if (typeof root?.pane_id === "string") return root.pane_id;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Look up the human-readable label of a herdr tab by id.
+ *
+ * Spec-2 (plan §1.3): the user-workspace reservation keys off the tab
+ * label, not the id. The orchestrator creates the user tab with
+ * `--label "user"`; `spawnPane`'s guard refuses to spawn into any
+ * tab whose label starts with `user-`. The label is fetched via
+ * `herdr tab list` and matched on the requested id.
+ *
+ * Returns `null` if the tab cannot be found or the response shape
+ * is unexpected — the guard treats null as "no opinion" (the call
+ * proceeds), so a transient lookup failure is non-fatal.
+ */
+function readTabLabel(containerId: string, tabId: string): string | null {
+  const result = herdrCmd(["tab", "list"], containerId);
+  if (result.exitCode !== 0) return null;
+  const trimmed = result.stdout.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const payload = JSON.parse(trimmed);
+    const tabs = payload?.result?.tabs;
+    if (Array.isArray(tabs)) {
+      for (const t of tabs) {
+        if (t?.tab_id === tabId && typeof t?.label === "string") {
+          return t.label;
+        }
+      }
+    }
   } catch {
     return null;
   }

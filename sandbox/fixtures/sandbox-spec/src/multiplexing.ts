@@ -32,6 +32,17 @@ export interface SubAgentConfig {
    * challenge signals. It cannot participate in producing artifacts.
    */
   signalOnly?: boolean;
+  /**
+   * Where this sub-agent lands in the herdr layout:
+   *   - "tab" — a fresh tab in the parent's workspace (sub-orchestrators).
+   *   - "pane" — a fresh pane inside an existing tab (sub-agents, fixers).
+   *
+   * Sub-orchestrators are always `'tab'`. Sub-agents inside a sub-orchestrator
+   * tab are `'pane'`. Defaults to `'pane'` so leaf sub-agents keep the
+   * existing in-tab behavior unless the orchestrator explicitly opts into
+   * a fresh tab.
+   */
+  tabPlacement?: "tab" | "pane";
 }
 
 export interface SubAgentHandle {
@@ -81,3 +92,10 @@ export function spawnSubAgent(
     parentPaneId,
   };
 }
+
+/**
+ * Default tab placement for a sub-agent when the caller does not specify one.
+ * Mirrors `SubAgentConfig.tabPlacement` — kept in one place so the spec and
+ * the runtime agree.
+ */
+export const DEFAULT_TAB_PLACEMENT: "pane" = "pane";
