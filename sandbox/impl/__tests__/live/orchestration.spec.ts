@@ -463,7 +463,7 @@ describeOrSkip("F7: orchestrator refuses to spawn into the user tab", { hookTime
       ctx.herdrSession = await HerdrSession.open({ containerId: ctx.containerId });
       ctx.orchestratorPane0 = await ctx.herdrSession.getPane0Id();
     }
-  });
+  }, 30_000);
 
   afterAll(async () => {
     if (ctx.herdrSession) {
@@ -474,7 +474,7 @@ describeOrSkip("F7: orchestrator refuses to spawn into the user tab", { hookTime
       await cleanupContainer(ctx.containerId);
       ctx.containerId = "";
     }
-  });
+  }, 30_000);
 
   it("spawnPane refuses a target tab whose label starts with user-", async () => {
     const available = await dockerAvailable();
